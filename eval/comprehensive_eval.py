@@ -285,7 +285,11 @@ def eval_perplexity_on_file(
 
     tokens = np.memmap(str(data_path), dtype="uint16", mode="r")
     n_total = len(tokens)
-    print(f"    {data_path.name}: {n_total:,} tokens")
+    # Cap at 2M tokens to keep eval time reasonable
+    MAX_EVAL_TOKENS = 2_000_000
+    if n_total > MAX_EVAL_TOKENS:
+        tokens = tokens[:MAX_EVAL_TOKENS]
+    print(f"    {data_path.name}: {n_total:,} tokens (using {len(tokens):,})")
 
     dataset = SlidingWindowDataset(tokens, seq_len=seq_len, stride=stride)
     if len(dataset) == 0:
@@ -341,7 +345,7 @@ def section_perplexity(
     """Run PPL on all 4 val sets. Returns {name: (ppl, bpt, n_tokens)}."""
     print_header("1. MULTI-SOURCE PERPLEXITY")
     val_files = [
-        "korean_val.bin",
+        "3b_val.bin",
         "korean_wiki_val.bin",
         "korean_c4_val.bin",
         "korean_namuwiki_val.bin",
@@ -389,9 +393,9 @@ def section_token_analysis(
     """Compute per-token NLL distribution and identify hardest/easiest tokens."""
     print_header("2. TOKEN-LEVEL NLL ANALYSIS")
 
-    val_path = data_dir / "korean_val.bin"
+    val_path = data_dir / "3b_val.bin"
     if not val_path.exists():
-        print("  [SKIPPED] korean_val.bin not found.")
+        print("  [SKIPPED] 3b_val.bin not found.")
         return
 
     tokens   = np.memmap(str(val_path), dtype="uint16", mode="r")
@@ -712,9 +716,9 @@ def section_calibration(
     """
     print_header("6. CALIBRATION CHECK")
 
-    val_path = data_dir / "korean_val.bin"
+    val_path = data_dir / "3b_val.bin"
     if not val_path.exists():
-        print("  [SKIPPED] korean_val.bin not found.")
+        print("  [SKIPPED] 3b_val.bin not found.")
         return {}
 
     tokens_all = np.memmap(str(val_path), dtype="uint16", mode="r")

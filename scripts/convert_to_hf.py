@@ -102,7 +102,7 @@ def remap_weights(
     dst["model.norm.weight"] = src_state_dict["norm.weight"].float()
     # Weight tying: embedding.weight == lm_head.weight in our model.
     # HF LlamaForCausalLM expects lm_head.weight explicitly.
-    dst["lm_head.weight"] = src_state_dict["embedding.weight"].float()
+    dst["lm_head.weight"] = src_state_dict["embedding.weight"].float().clone()
 
     return dst
 
