@@ -1,0 +1,35 @@
+# ===== 대용량 데이터 (Git 추적 제외) =====
+checkpoints/
+data/
+outputs/
+
+# ===== 도구/캐시 설정 =====
+.compile_cache/
+.claude/
+.serena/
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# ===== 모델 바이너리 =====
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.onnx
+
+# ===== 로그/임시 =====
+*.log
+wandb/
+runs/
+nohup.out
+*.tmp
+
+# ===== OS/IDE =====
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo

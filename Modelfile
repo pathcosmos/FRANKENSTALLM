@@ -1,0 +1,14 @@
+# Korean LLM 1B — Ollama Modelfile
+# Usage:
+#   ollama create korean-llm-1b -f Modelfile
+#   ollama run korean-llm-1b
+
+FROM ./outputs/gguf/korean-1b-q4km.gguf
+
+PARAMETER temperature 0.8
+PARAMETER top_p 0.9
+PARAMETER top_k 50
+PARAMETER num_ctx 4096
+PARAMETER repeat_penalty 1.1
+
+SYSTEM "당신은 한국어를 유창하게 구사하는 AI 어시스턴트입니다. 질문에 성실하고 정확하게 답변해 주세요."
