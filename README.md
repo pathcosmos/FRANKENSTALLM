@@ -419,7 +419,7 @@ MFU 33.5%는 처음에는 낮아 보일 수 있다. 하지만 TE MXFP8가 이미
 
 ## 7. 학습 데이터
 
-### 토크나이저
+### 7.1 토크나이저
 
 | 항목 | 값 |
 |------|-----|
@@ -431,51 +431,154 @@ MFU 33.5%는 처음에는 낮아 보일 수 있다. 하지만 TE MXFP8가 이미
 
 64K 어휘는 32K(너무 작음, 한국어 서브워드 단편화 심함)와 128K(너무 큼, 임베딩 레이어 오버헤드 증가) 사이의 균형이다. Llama 3(128K)와 GPT-4(100K)가 큰 어휘를 사용하는 추세지만, 3B 모델에서 128K 어휘는 임베딩 레이어만으로도 파라미터 비중이 지나치게 커진다.
 
-### 프리트레인 데이터
+### 7.2 프리트레인 데이터 — 전체 구성
 
-| 파일 | 크기 | 토큰 수 | 출처 |
-|------|------|---------|------|
-| `data/3b_train.bin` | 82GB | 41.12B | 혼합 (아래 참조) |
-| `data/3b_val.bin` | 151MB | ~75M | 검증셋 |
-| `data/cc100_ko_train.bin` | 4.5GB | ~2.25B | CC100 한국어 |
-| `data/cosmo_auto_math_text_train.bin` | 2.6GB | ~1.3B | 수학 텍스트 |
+최종 학습 파일: `data/3b_train.bin` (77GB, ~38.5B tokens) + `data/3b_val.bin` (145MB)
 
-**주요 데이터 소스**:
+Chinchilla 법칙 기준: 3B × 20 = **60B 토큰**이 최적이다. 현재 38.5B 토큰을 57,000 스텝(batch 5 × accum 8 × seq 2048 × 8 GPU)으로 반복 소비하며, 처음 3B 학습으로서 합리적인 범위다.
 
-| 소스 | 특징 | 역할 |
-|------|------|------|
-| C4 Korean | 대규모 웹 텍스트, 클린 버전 | 일반 언어 이해 |
-| 나무위키 | 한국 백과사전, 구조화된 텍스트 | 사실 지식 |
-| Wikipedia Korean | 표준 백과사전 | 사실 지식, 문어체 |
-| korean_extra datasets | 뉴스, 소설, 대화 등 | 다양성 확보 |
+#### 한국어 — 웹크롤 (Web Crawl)
 
-Chinchilla 법칙 기준: 3B 파라미터 × 20 = **60B 토큰**이 최적이다. 41.12B 토큰으로 57,000 스텝을 돌리면 약 45B 토큰을 소비한다. 완벽한 Chinchilla 최적점은 아니지만, 처음 3B 학습으로서는 합리적인 범위다.
+| 데이터셋 | HuggingFace ID | 토큰화 파일 | 크기 | 추정 토큰 | 설명 |
+|----------|---------------|------------|------|----------|------|
+| C4 Korean | `allenai/c4` (ko subset) | `korean_c4_train.bin` | 15GB | ~7.5B | Google C4 한국어 필터링, 대규모 클린 웹 텍스트 |
+| CC-100 Korean | `cc100` (ko subset) | `cc100_ko_train.bin` | 4.3GB | ~2.15B | Common Crawl 기반 단일언어 코퍼스 |
+| HPLT Korean | `HPLT/hplt_monolingual_v2` (ko) | `hplt_ko_train.bin` | 15GB | ~7.5B | High Performance Language Technologies 웹 데이터 |
 
-### SFT 데이터
+#### 한국어 — 백과사전 (Encyclopedia)
 
-| 항목 | 값 |
-|------|-----|
-| 총 샘플 수 | 1.25M |
-| 원시 소스 수 | 161K |
-| 형식 | instruction-response 쌍 |
+| 데이터셋 | HuggingFace ID | 토큰화 파일 | 크기 | 추정 토큰 | 설명 |
+|----------|---------------|------------|------|----------|------|
+| 위키백과 한국어 | `wikimedia/wikipedia` (20231101.ko) | `wikipedia_ko_train.bin` | 566MB | ~283M | 한국어 위키백과 전체, 구조화된 문어체 |
+| 위키백과 한국어 (v2) | `wikimedia/wikipedia` (ko) | `korean_wiki_train.bin` | 500MB | ~250M | 위키백과 별도 버전 |
+| 나무위키 | `heegyu/namuwiki-extracted` | `korean_namuwiki_train.bin` | 2.1GB | ~1.05B | 나무위키 추출본, 서브컬처·시사 풍부 |
+| 나무위키 2023b | `heegyu/namuwiki-extracted` (2023b) | `namuwiki_2023b_train.bin` | 2.5GB | ~1.25B | 2023년 업데이트 스냅샷 |
 
-**주요 SFT 데이터 소스**:
+#### 영어/다국어 — 교육 (Educational)
 
-| 데이터셋 | 특징 |
-|----------|------|
-| evol-instruct (한국어) | 진화적 명령 복잡도 증가 |
-| alpaca-gpt4-korean | GPT-4 생성 고품질 지시 응답 |
-| korean_safe_conv | 안전 대화 데이터 |
-| ShareGPT 한국어 번역 | 실제 대화 패턴 |
+| 데이터셋 | HuggingFace ID | 토큰화 파일 | 크기 | 추정 토큰 | 설명 |
+|----------|---------------|------------|------|----------|------|
+| Cosmopedia Stories | `HuggingFaceTB/cosmopedia` | `cosmo_stories_train.bin` | 5.9GB | ~2.95B | 합성 교육용 스토리 |
+| Cosmopedia Web v2 | `HuggingFaceTB/cosmopedia` | `cosmo_web_v2_train.bin` | 2.7GB | ~1.35B | 웹 기반 교육 텍스트 |
+| Cosmopedia Stanford | `HuggingFaceTB/cosmopedia` | `cosmo_stanford_train.bin` | 2.1GB | ~1.05B | Stanford 강의 기반 |
+| Cosmopedia WikiHow | `HuggingFaceTB/cosmopedia` | `cosmo_wikihow_train.bin` | 382MB | ~191M | WikiHow 가이드 |
+| Cosmopedia OpenStax | `HuggingFaceTB/cosmopedia` | `cosmo_openstax_train.bin` | 224MB | ~112M | 오픈 교과서 |
+| Cosmopedia Khan Academy | `HuggingFaceTB/cosmopedia` | `cosmo_khanacademy_train.bin` | 46MB | ~23M | 칸 아카데미 |
 
-### 선호도 데이터 (ORPO용)
+#### 영어/다국어 — 수학·과학 (Math & Science)
 
-| 데이터셋 | 특징 |
-|----------|------|
-| ko_Ultrafeedback | 다양한 선호도 점수 |
-| orca-math-korean-dpo | 수학 문제 선호도 쌍 |
+| 데이터셋 | HuggingFace ID | 토큰화 파일 | 크기 | 추정 토큰 | 설명 |
+|----------|---------------|------------|------|----------|------|
+| Open Web Math | `open-web-math/open-web-math` | `open_web_math_train.bin` | 4.8GB | ~2.4B | 웹에서 추출한 수학 텍스트 |
+| MathPile | `GAIR/MathPile` | `mathpile_train.bin` | 2.9GB | ~1.45B | 수학 교과서·논문·포럼 |
+| Cosmopedia AutoMath | `HuggingFaceTB/cosmopedia` | `cosmo_auto_math_text_train.bin` | 2.5GB | ~1.25B | 합성 수학 문제·풀이 |
 
-ORPO는 Phase 3에서 반복률이 5% 초과할 경우에만 실행한다. 3B 모델이 1B의 구조적 반복 문제를 스스로 해결한다면 ORPO 없이 배포할 수 있다.
+#### 한국어 — 혼합 (Legacy Merged)
+
+| 데이터셋 | 토큰화 파일 | 크기 | 추정 토큰 | 설명 |
+|----------|------------|------|----------|------|
+| 초기 혼합 (C4+나무+위키) | `korean_train.bin` | 17GB | ~8.5B | 1B 학습에 사용된 원본 혼합 데이터 |
+| 125M 검증용 | `train.bin` | 1.2GB | ~600M | 최초 FP8 검증에 사용 |
+
+#### 미사용 수집 데이터 (korean_extra/ — 640GB+)
+
+`data/korean_extra/` 에 39개 서브디렉토리로 수집되었으나, 토큰화·병합은 일부만 완료된 대규모 원시 데이터:
+
+| 분류 | 데이터셋 | 설명 | 비고 |
+|------|----------|------|------|
+| 웹크롤 | CulturaX Korean | 대규모 다국어 웹 코퍼스 한국어 | ~50B+ tokens |
+| 웹크롤 | FineWeb2 Educational Korean | 교육적 품질 필터링 웹 데이터 | 234GB raw |
+| 웹크롤 | Korean Web Collection | KORMo 웹 컬렉션 | 175GB raw |
+| 웹크롤 | OSCAR Korean | 다국어 웹 코퍼스 한국어 | |
+| 교육 | Korean Textbooks | 한국어 교과서 텍스트 | 45개 서브카테고리 |
+| 교육 | FinePDFs Educational Korean | PDF 기반 교육 자료 | |
+| 법률 | Korean Law | 한국 법률 텍스트 | 15GB |
+| 뉴스 | Korean News Archive | 한국어 뉴스 아카이브 | |
+| 공개코퍼스 | Korean Public Corpus | KORMo 공개 코퍼스 | 26GB |
+| 코드 | Code Pretrain | 프로그래밍 코드 | |
+| 학술 | Academic Pretrain | 학술 논문·리포트 | |
+| 범용 | SlimPajama | RedPajama 경량 버전 | |
+
+> 이 데이터는 Extended Pretrain (80-100B tokens) 단계에서 활용 예정이다.
+
+#### 프리트레인 데이터 분야별 비율
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              3b_train.bin 토큰 구성 (~38.5B)              │
+├─────────────────────────────────────────────────────────┤
+│ ████████████████████░░░░░░░░░░  한국어 웹크롤    44.7%  │
+│ ██████████░░░░░░░░░░░░░░░░░░░░  혼합 레거시      22.1%  │
+│ ██████░░░░░░░░░░░░░░░░░░░░░░░░  교육 (EN)       14.7%  │
+│ █████░░░░░░░░░░░░░░░░░░░░░░░░░  수학·과학       13.2%  │
+│ ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░  백과사전 (KO)    5.3%  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 7.3 SFT 데이터 — 1.25M 샘플
+
+총 **~1.25M instruction-response 쌍** (161K 기본 + 1.08M 추가)
+
+#### 기본 SFT 소스 (161K 샘플)
+
+| HuggingFace ID | 이름 | 샘플링 가중치 | 분야 | 설명 |
+|---------------|------|-------------|------|------|
+| `FreedomIntelligence/Evol-Instruct-Korean` | Evol-Instruct 한국어 | 2.0× | 복잡한 추론·코드 | WizardLM 방식으로 진화된 한국어 명령 |
+| `junhochoi/ko-alpaca-12k` | 한국어 Alpaca 12K | 2.0× | 범용 지시 응답 | GPT-4 생성 고품질 Alpaca 포맷 |
+| `kyujinpy/KOR-OpenOrca-Platypus-v3` | KOR-OpenOrca-Platypus | 1.5× | 추론·지식 | OpenOrca + Platypus 한국어 번역 |
+| `jojo0217/korean_safe_conversation` | 안전 대화 | 1.5× | 안전 정렬 | 안전한 대화 패턴 학습 |
+| `nlpai-lab/kullm-v2` | KULLM v2 | 1.0× | 범용 한국어 지시 | 한국어 언어 모델 지시 데이터 |
+| `maywell/koVast` | koVast | 0.5× (max 50K) | 멀티턴 대화 | 다중 턴 대화 패턴 |
+
+**필터링 기준**: 출력 50~3,000자, 한국어 비율 ≥50%, EOS/Q&A 마커 제거, 반복 패턴 필터
+
+#### 추가 SFT 소스 (sft_extra/ — 1.08M 샘플)
+
+`data/sft_extra/` 디렉토리에 27개 서브디렉토리로 추가 수집된 대규모 SFT 데이터.
+
+### 7.4 선호도 데이터 (ORPO용) — 795K 쌍
+
+총 **795,468 preference pairs** (7.9GB, `data/preference/combined_preference.jsonl`)
+
+| HuggingFace ID | 크기 | 분야 | 포맷 |
+|---------------|------|------|------|
+| `nayohan/preference-collection-ko-full` | 4.9GB | 범용 선호도 평가 | instruction + response_A/B + preference |
+| `heegyu/orca-math-korean-preference-cleaned` | 1.6GB | 수학 추론 | prompt + chosen + rejected |
+| `kuotient/orca-math-korean-dpo-pairs` | 750MB | 수학 DPO | prompt + chosen + rejected |
+| `maywell/ko_Ultrafeedback_binarized` | 394MB | 피드백 기반 정렬 | prompt + winning/losing response |
+| `tellang/yeji-preference-ko-v1` | 171MB | 범용 선호도 | prompt + chosen + rejected |
+| `jojo0217/korean_rlhf_dataset` | 137MB | RLHF 쌍 | prompt + chosen + rejected |
+| `lemon-mint/korean-realqa-reasoning-v01-preference` | 58MB | QA 추론 | prompt + chosen + rejected |
+
+**필터링 기준**: 최소 길이 20자, EOS 제거, 포맷 정규화 후 통합
+
+> ORPO는 Phase 3에서 반복률이 5% 초과할 경우에만 실행한다. 3B 모델이 1B의 구조적 반복 문제를 스스로 해결한다면 ORPO 없이 배포할 수 있다.
+
+### 7.5 데이터 파이프라인 요약
+
+```
+[HuggingFace / 웹 수집]
+        │
+        ▼
+┌─── 원시 수집 ───────────────────────────────────────────┐
+│  korean_extra/ (39개 디렉토리, 640GB+)                    │
+│  sft_extra/ (27개 디렉토리, 1.08M 샘플)                   │
+│  preference/ (7개 JSONL, 795K 쌍)                        │
+└─────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─── 토큰화 (SentencePiece 64K) ──────────────────────────┐
+│  tokenize_extra.py — 자동 포맷 감지 (Arrow/Parquet/JSONL) │
+│  8 workers 병렬 처리, uint16 memmap (.bin) 출력           │
+└─────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─── 최종 병합 ───────────────────────────────────────────┐
+│  Pretrain: 3b_train.bin (77GB, ~38.5B tokens)           │
+│  SFT:     sft/train.jsonl (276MB, 161K → 1.25M 샘플)   │
+│  ORPO:    preference/combined_preference.jsonl (7.9GB)  │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
