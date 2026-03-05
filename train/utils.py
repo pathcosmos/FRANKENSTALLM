@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import yaml
@@ -116,15 +118,31 @@ def save_checkpoint(
     """
     dir_name = f"checkpoint-{suffix}" if suffix else f"checkpoint-{step:07d}"
     ckpt_dir = Path(path) / dir_name
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(path) / f".tmp_{dir_name}"
 
-    # Unwrap DDP model if necessary.
+    # Write to temp directory first for crash safety
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
     raw_model: torch.nn.Module = getattr(model, "module", model)
 
-    torch.save(raw_model.state_dict(), ckpt_dir / "model.pt")
-    torch.save(optimizer.state_dict(), ckpt_dir / "optimizer.pt")
-    torch.save(scheduler.state_dict(), ckpt_dir / "scheduler.pt")
-    torch.save({"step": step, "loss": loss}, ckpt_dir / "train_state.pt")
+    torch.save(raw_model.state_dict(), tmp_dir / "model.pt")
+    torch.save(optimizer.state_dict(), tmp_dir / "optimizer.pt")
+    torch.save(scheduler.state_dict(), tmp_dir / "scheduler.pt")
+
+    import random as _random
+    train_state = {
+        "step": step,
+        "loss": loss,
+        "rng_state": {
+            "python": _random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch_cpu": torch.random.get_rng_state(),
+            "torch_cuda": torch.cuda.get_rng_state_all(),
+        },
+    }
+    torch.save(train_state, tmp_dir / "train_state.pt")
 
     # Persist the model config when available.
     if hasattr(raw_model, "config"):
@@ -136,10 +154,33 @@ def save_checkpoint(
             config_dict = {
                 k: v for k, v in vars(cfg).items() if not k.startswith("_")
             }
-        with open(ckpt_dir / "config.yaml", "w", encoding="utf-8") as f:
+        with open(tmp_dir / "config.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
+    # Atomic swap: rename old → trash, tmp → final, delete trash
+    trash_dir = Path(path) / f".trash_{dir_name}"
+    if trash_dir.exists():
+        shutil.rmtree(trash_dir)
+    if ckpt_dir.exists():
+        ckpt_dir.rename(trash_dir)
+    tmp_dir.rename(ckpt_dir)
+    if trash_dir.exists():
+        shutil.rmtree(trash_dir)
+
+    # Clean up old checkpoints (keep recent N + best)
+    cleanup_old_checkpoints(Path(path))
+
     return ckpt_dir
+
+
+def cleanup_old_checkpoints(path: Path, keep: int = 5) -> None:
+    """Remove old checkpoints, keeping the most recent `keep` plus checkpoint-best."""
+    ckpts = sorted(
+        [d for d in path.glob("checkpoint-[0-9]*") if d.is_dir()],
+        key=lambda d: d.stat().st_mtime,
+    )
+    for old in ckpts[:-keep]:
+        shutil.rmtree(old)
 
 
 def load_checkpoint(
@@ -195,6 +236,18 @@ def load_checkpoint(
     )
     step: int = int(train_state["step"])
     loss: float = float(train_state["loss"])
+
+    # Restore RNG states if available (for exact resume reproducibility)
+    rng_state = train_state.get("rng_state")
+    if rng_state is not None:
+        import random as _random
+        try:
+            _random.setstate(rng_state["python"])
+            np.random.set_state(rng_state["numpy"])
+            torch.random.set_rng_state(rng_state["torch_cpu"])
+            torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+        except Exception as e:
+            print(f"[WARN] RNG state restore failed (non-fatal): {e}")
 
     return step, loss
 

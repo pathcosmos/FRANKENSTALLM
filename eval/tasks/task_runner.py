@@ -113,13 +113,27 @@ def _run_task(args: argparse.Namespace) -> dict:
         if not args.lm_eval_tasks:
             raise ValueError("--lm-eval-tasks is required for lm_eval task")
         tasks_list = [t.strip() for t in args.lm_eval_tasks.split(",") if t.strip()]
-        from eval.tasks.lm_eval_task import run_lm_eval_tasks
-        result = run_lm_eval_tasks(
-            args.hf_model_path,
-            tasks_list,
-            device,
-            num_fewshot=args.num_fewshot,
-        )
+
+        if args.fewshot_list:
+            # Pipeline mode: load model once, run multiple fewshot settings
+            fewshot_values = [int(x.strip()) for x in args.fewshot_list.split(",")]
+            from eval.tasks.lm_eval_task import run_lm_eval_tasks_pipeline
+            result = run_lm_eval_tasks_pipeline(
+                args.hf_model_path,
+                tasks_list,
+                device,
+                fewshot_values,
+                output_dir=str(Path(args.output).parent),
+                output_prefix=Path(args.output).stem,
+            )
+        else:
+            from eval.tasks.lm_eval_task import run_lm_eval_tasks
+            result = run_lm_eval_tasks(
+                args.hf_model_path,
+                tasks_list,
+                device,
+                num_fewshot=args.num_fewshot,
+            )
 
     else:
         raise ValueError(f"Unknown task: {task!r}. Valid tasks: {sorted(VALID_TASKS)}")
@@ -180,6 +194,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Number of few-shot examples (for lm_eval). Default: 0.",
+    )
+    parser.add_argument(
+        "--fewshot-list",
+        default=None,
+        help="Comma-separated fewshot values to run sequentially, e.g. '0,5'. "
+             "Model is loaded once and reused. Overrides --num-fewshot.",
     )
     return parser.parse_args()
 

@@ -7,16 +7,123 @@ Generates comprehensive evaluation reports with sections for:
 - Token NLL distribution
 - Generation quality samples
 - Repetition parameter search results
-- Standard benchmark results (lm-eval)
+- Standard benchmark results (lm-eval) — Korean + English
+- 0-shot vs 5-shot comparison
 - Comparison with reference models
-- GPU/time statistics
 """
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import json
 
+
+# =========================================================================
+# Normalization helpers — map GPU-label keys to logical sections
+# =========================================================================
+
+def _normalize_phase1_results(raw: dict) -> dict:
+    """Convert GPU-labelled phase1_results into logical sections.
+
+    Returns dict with keys: perplexity, calibration, token_nll, generation, repetition.
+    """
+    normalized: Dict[str, Any] = {
+        "perplexity": {},
+        "calibration": {},
+        "token_nll": {},
+        "generation": {},
+        "repetition": {},
+    }
+
+    for label, data in raw.items():
+        if not isinstance(data, (dict, list)):
+            continue
+
+        if "PPL" in label:
+            # PPL entries: single dict or list of dicts
+            if isinstance(data, dict) and "ppl" in data:
+                name = data.get("name", label)
+                normalized["perplexity"][name] = data
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and "ppl" in item:
+                        name = item.get("name", f"unknown_{len(normalized['perplexity'])}")
+                        normalized["perplexity"][name] = item
+            elif isinstance(data, dict) and "error" in data:
+                # Task failed — skip
+                pass
+        elif "Calibration" in label:
+            if isinstance(data, dict):
+                if "calibration" in data:
+                    normalized["calibration"] = data["calibration"]
+                if "token_nll" in data:
+                    normalized["token_nll"] = data["token_nll"]
+        elif "Generation" in label:
+            if isinstance(data, dict):
+                normalized["generation"] = data
+        elif "Repetition" in label:
+            if isinstance(data, dict):
+                normalized["repetition"] = data
+
+    return normalized
+
+
+def _normalize_phase2_results(raw: dict) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Convert GPU-labelled phase2_results into flat task dicts for 0-shot and 5-shot.
+
+    Returns (zero_shot_metrics, five_shot_metrics) where each is:
+      {"kobest_boolq": {"acc,none": 0.50, ...}, "haerae": {...}, ...}
+    """
+    zero_shot: Dict[str, Any] = {}
+    five_shot: Dict[str, Any] = {}
+
+    for label, data in raw.items():
+        if label == "5shot":
+            # Recurse into 5-shot sub-dict
+            if isinstance(data, dict):
+                for sub_label, sub_data in data.items():
+                    if isinstance(sub_data, dict) and "per_task_metrics" in sub_data:
+                        for task_name, metrics in sub_data["per_task_metrics"].items():
+                            five_shot[task_name] = metrics
+            continue
+
+        if isinstance(data, dict) and "per_task_metrics" in data:
+            for task_name, metrics in data["per_task_metrics"].items():
+                zero_shot[task_name] = metrics
+
+    return zero_shot, five_shot
+
+
+def _get_acc(metrics: dict, prefer_norm: bool = False) -> Optional[float]:
+    """Extract accuracy from lm-eval metrics dict."""
+    if prefer_norm and "acc_norm,none" in metrics:
+        val = metrics["acc_norm,none"]
+        if isinstance(val, (int, float)):
+            return float(val)
+    if "acc,none" in metrics:
+        val = metrics["acc,none"]
+        if isinstance(val, (int, float)):
+            return float(val)
+    return None
+
+
+def _fmt_pct(val: Optional[float]) -> str:
+    """Format as percentage string or N/A."""
+    if val is None:
+        return "N/A"
+    return f"{val * 100:.2f}%"
+
+
+def _fmt_f(val, decimals: int = 4) -> str:
+    """Format float or return N/A."""
+    if isinstance(val, (int, float)):
+        return f"{val:.{decimals}f}"
+    return str(val) if val is not None else "N/A"
+
+
+# =========================================================================
+# Main report generator
+# =========================================================================
 
 def generate_report(
     phase1_results: dict,
@@ -26,126 +133,219 @@ def generate_report(
     checkpoint_name: str = "checkpoint-0057000",
     total_elapsed_sec: float = 0.0,
 ) -> str:
+    """Generate a comprehensive markdown evaluation report.
+
+    Handles the GPU-labelled key structure from full_eval_pipeline.py
+    and produces multiple report files.
     """
-    Generate a comprehensive markdown evaluation report.
-    
-    Args:
-        phase1_results: Dictionary containing perplexity, calibration, token_nll, 
-                       generation, and repetition results
-        phase2_results: Dictionary containing benchmark results (KoBEST, MMLU-ko, etc.)
-        generation_samples: List of generation sample dictionaries
-        output_dir: Directory to save the report
-        checkpoint_name: Name of the model checkpoint
-        total_elapsed_sec: Total elapsed time for all evaluations
-    
-    Returns:
-        Markdown string content (also written to output_dir / "full_eval_report.md")
-    """
-    
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Start building the report
-    report = []
-    
-    # ===== 1. Header =====
+    reports_dir = output_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # Normalize data
+    p1 = _normalize_phase1_results(phase1_results)
+    zero_shot, five_shot = _normalize_phase2_results(phase2_results)
+
     eval_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report.append("# FRANKENSTALLM 3B 종합 평가 리포트\n")
-    report.append(f"- **모델**: FRANKENSTALLM 3B")
-    report.append(f"- **체크포인트**: {checkpoint_name}")
-    report.append(f"- **평가 일시**: {eval_datetime}")
-    report.append(f"- **총 소요 시간**: {total_elapsed_sec:.1f}초\n")
-    
-    # ===== 2. Executive Summary =====
-    report.append("## Executive Summary\n")
-    report.append("| 메트릭 | 값 |")
-    report.append("|--------|-----|")
-    
-    # Extract key metrics
-    main_ppl = phase1_results.get("perplexity", {}).get("3b_val", {}).get("ppl", "데이터 없음")
-    if isinstance(main_ppl, (int, float)):
-        main_ppl = f"{main_ppl:.4f}"
-    
-    mmlu_ko_acc = "데이터 없음"
-    if phase2_results and "global_mmlu_ko" in phase2_results:
-        mmlu_ko_data = phase2_results.get("global_mmlu_ko", {})
-        if isinstance(mmlu_ko_data, dict) and "accuracy" in mmlu_ko_data:
-            mmlu_ko_acc = f"{mmlu_ko_data['accuracy']:.4f}"
-        elif isinstance(mmlu_ko_data, float):
-            mmlu_ko_acc = f"{mmlu_ko_data:.4f}"
-    
-    kobest_avg = "데이터 없음"
-    if phase2_results:
-        kobest_tasks = {}
-        for task_name in ["korsts", "ynat", "klue-sts", "klue-nli"]:
-            if task_name in phase2_results:
-                task_data = phase2_results[task_name]
-                if isinstance(task_data, dict) and "accuracy" in task_data:
-                    kobest_tasks[task_name] = task_data["accuracy"]
-        if kobest_tasks:
-            kobest_avg = f"{sum(kobest_tasks.values()) / len(kobest_tasks):.4f}"
-    
-    top1_acc = phase1_results.get("calibration", {}).get("top1_accuracy", "데이터 없음")
-    if isinstance(top1_acc, (int, float)):
-        top1_acc = f"{top1_acc:.4f}"
-    
-    report.append(f"| 주요 PPL (3b_val) | {main_ppl} |")
-    report.append(f"| KMMLU 평균 정확도 | {mmlu_ko_acc} |")
-    report.append(f"| KoBEST 평균 | {kobest_avg} |")
-    report.append(f"| Top-1 정확도 (Calibration) | {top1_acc} |")
-    report.append("")
-    
-    # ===== 3. Perplexity Table =====
-    report.append("## 3. Perplexity 평가\n")
-    if phase1_results.get("perplexity"):
-        ppl_data = phase1_results["perplexity"]
-        
-        # Build table rows
-        ppl_rows = []
-        for dataset_name, metrics in ppl_data.items():
-            if isinstance(metrics, dict):
-                ppl = metrics.get("ppl", "N/A")
-                bits_per_token = metrics.get("bits_per_token", "N/A")
-                n_tokens = metrics.get("n_tokens", "N/A")
-                n_eval_tokens = metrics.get("n_eval_tokens", "N/A")
-                elapsed_sec = metrics.get("elapsed_sec", "N/A")
-                
-                # Format numeric values
-                if isinstance(ppl, (int, float)):
-                    ppl = f"{ppl:.4f}"
-                if isinstance(bits_per_token, (int, float)):
-                    bits_per_token = f"{bits_per_token:.4f}"
-                if isinstance(elapsed_sec, (int, float)):
-                    elapsed_sec = f"{elapsed_sec:.1f}"
-                
-                ppl_rows.append({
-                    "dataset": dataset_name,
-                    "ppl_val": float(ppl) if isinstance(ppl, str) and ppl != "N/A" else float('inf'),
-                    "ppl_str": ppl,
-                    "bits": bits_per_token,
-                    "n_tokens": n_tokens,
-                    "n_eval": n_eval_tokens,
-                    "time": elapsed_sec,
-                })
-        
-        # Sort by PPL descending
-        ppl_rows.sort(key=lambda x: x["ppl_val"], reverse=True)
-        
-        report.append("| 데이터셋 | PPL | Bits/Token | 전체 토큰 | 평가 토큰 | 소요 시간 |")
-        report.append("|---------|-----|-----------|---------|---------|---------|")
-        for row in ppl_rows:
-            report.append(f"| {row['dataset']} | {row['ppl_str']} | {row['bits']} | {row['n_tokens']} | {row['n_eval']} | {row['time']}s |")
-        report.append("")
+
+    # ===== Generate individual reports =====
+    ppl_report = _generate_perplexity_report(p1["perplexity"])
+    cal_report = _generate_calibration_report(p1["calibration"], p1["token_nll"])
+    gen_report = _generate_generation_report(p1["generation"], generation_samples)
+    bench_report = _generate_benchmark_report(zero_shot, five_shot, p1["repetition"])
+    exec_summary = _generate_executive_summary(
+        p1, zero_shot, five_shot, checkpoint_name, eval_datetime, total_elapsed_sec,
+    )
+
+    # Write individual reports
+    (reports_dir / "00_executive_summary.md").write_text(exec_summary, encoding="utf-8")
+    (reports_dir / "01_perplexity_report.md").write_text(ppl_report, encoding="utf-8")
+    (reports_dir / "02_calibration_report.md").write_text(cal_report, encoding="utf-8")
+    (reports_dir / "03_generation_quality.md").write_text(gen_report, encoding="utf-8")
+    (reports_dir / "04_benchmark_report.md").write_text(bench_report, encoding="utf-8")
+
+    # Combined full report
+    full_report = "\n\n---\n\n".join([
+        exec_summary, ppl_report, cal_report, gen_report, bench_report,
+    ])
+
+    report_path = output_dir / "full_eval_report.md"
+    report_path.write_text(full_report, encoding="utf-8")
+
+    return full_report
+
+
+# =========================================================================
+# Individual report sections
+# =========================================================================
+
+def _generate_executive_summary(
+    p1: dict,
+    zero_shot: dict,
+    five_shot: dict,
+    checkpoint_name: str,
+    eval_datetime: str,
+    total_elapsed_sec: float,
+) -> str:
+    lines = [
+        "# FRANKENSTALLM 3B 종합 평가 리포트\n",
+        f"- **모델**: FRANKENSTALLM 3B",
+        f"- **체크포인트**: {checkpoint_name}",
+        f"- **평가 일시**: {eval_datetime}",
+        f"- **총 소요 시간**: {total_elapsed_sec:.1f}초\n",
+        "## Executive Summary\n",
+    ]
+
+    # Main PPL
+    main_ppl = "N/A"
+    ppl_data = p1.get("perplexity", {})
+    for name in ["3b", "3b_val"]:
+        if name in ppl_data and isinstance(ppl_data[name], dict):
+            main_ppl = _fmt_f(ppl_data[name].get("ppl"))
+            break
+
+    # KoBEST average
+    kobest_tasks = ["kobest_boolq", "kobest_copa", "kobest_hellaswag",
+                    "kobest_sentineg", "kobest_wic"]
+    kobest_accs = []
+    for t in kobest_tasks:
+        if t in zero_shot:
+            a = _get_acc(zero_shot[t])
+            if a is not None:
+                kobest_accs.append(a)
+    kobest_avg = _fmt_pct(sum(kobest_accs) / len(kobest_accs)) if kobest_accs else "N/A"
+
+    # MMLU-KO — prefer group-level weighted average from lm-eval
+    mmlu_ko_avg = "N/A"
+    mmlu_ko_count = 0
+    if "global_mmlu_ko" in zero_shot:
+        a = _get_acc(zero_shot["global_mmlu_ko"])
+        if a is not None:
+            mmlu_ko_avg = _fmt_pct(a)
+            # Count subtasks for display
+            mmlu_ko_count = sum(
+                1 for t in zero_shot
+                if t.startswith("global_mmlu_ko_") and _get_acc(zero_shot[t]) is not None
+            )
+            if mmlu_ko_count == 0:
+                mmlu_ko_count = 1  # group-level only
     else:
-        report.append("데이터 없음\n")
-    
-    # ===== 4. Calibration Results =====
-    report.append("## 4. Calibration 결과\n")
-    if phase1_results.get("calibration"):
-        cal_data = phase1_results["calibration"]
-        report.append("| 메트릭 | 값 |")
-        report.append("|--------|-----|")
-        
+        # Fallback: average subtask-level metrics
+        mmlu_ko_accs = []
+        for t, m in zero_shot.items():
+            if t.startswith("global_mmlu_ko_"):
+                a = _get_acc(m)
+                if a is not None:
+                    mmlu_ko_accs.append(a)
+        if mmlu_ko_accs:
+            mmlu_ko_avg = _fmt_pct(sum(mmlu_ko_accs) / len(mmlu_ko_accs))
+            mmlu_ko_count = len(mmlu_ko_accs)
+
+    # MMLU-EN — exclude group-level keys to avoid double-counting
+    _MMLU_EN_GROUPS = {"mmlu", "mmlu_humanities", "mmlu_social_sciences", "mmlu_stem", "mmlu_other"}
+    mmlu_en_accs = []
+    for t, m in zero_shot.items():
+        if (t.startswith("mmlu_") or t == "mmlu") and t not in _MMLU_EN_GROUPS:
+            a = _get_acc(m)
+            if a is not None:
+                mmlu_en_accs.append(a)
+    if not mmlu_en_accs:
+        # Fallback to group-level if no subtasks
+        for t in _MMLU_EN_GROUPS:
+            if t in zero_shot:
+                a = _get_acc(zero_shot[t])
+                if a is not None:
+                    mmlu_en_accs.append(a)
+    mmlu_en_avg = _fmt_pct(sum(mmlu_en_accs) / len(mmlu_en_accs)) if mmlu_en_accs else "N/A"
+
+    # HAE-RAE
+    haerae_acc = "N/A"
+    if "haerae" in zero_shot:
+        a = _get_acc(zero_shot["haerae"])
+        if a is not None:
+            haerae_acc = _fmt_pct(a)
+
+    # English benchmarks
+    en_benchmarks = {}
+    for t in ["hellaswag", "arc_easy", "arc_challenge", "winogrande", "piqa"]:
+        if t in zero_shot:
+            a = _get_acc(zero_shot[t], prefer_norm=(t in ["hellaswag", "arc_challenge"]))
+            if a is not None:
+                en_benchmarks[t] = a
+
+    # Top-1 accuracy
+    top1 = _fmt_f(p1.get("calibration", {}).get("top1_accuracy"))
+
+    lines.append("| 메트릭 | 값 |")
+    lines.append("|--------|-----|")
+    lines.append(f"| 주요 PPL (3b_val) | {main_ppl} |")
+    lines.append(f"| MMLU-KO 평균 ({mmlu_ko_count}과목) | {mmlu_ko_avg} |")
+    lines.append(f"| MMLU-EN 평균 | {mmlu_en_avg} |")
+    lines.append(f"| KoBEST 평균 ({len(kobest_accs)}태스크) | {kobest_avg} |")
+    lines.append(f"| HAE-RAE | {haerae_acc} |")
+    for t, a in en_benchmarks.items():
+        lines.append(f"| {t} (0-shot) | {_fmt_pct(a)} |")
+    lines.append(f"| Top-1 정확도 (Calibration) | {top1} |")
+    lines.append("")
+
+    # Reference comparison
+    lines.append("## 참고 모델 비교\n")
+    lines.append("| 모델 | 파라미터 | MMLU-KO | MMLU-EN | KoBEST 평균 | PPL |")
+    lines.append("|------|---------|---------|---------|------------|-----|")
+    lines.append(f"| **FRANKENSTALLM 3B** | 3B | {mmlu_ko_avg} | {mmlu_en_avg} | {kobest_avg} | {main_ppl} |")
+    lines.append("| Llama-3.2-3B | 3B | ~42% | ~58% | ~55% | — |")
+    lines.append("| Qwen2.5-3B | 3B | ~48% | ~65% | ~60% | — |")
+    lines.append("| EXAONE-3.5-2.4B | 2.4B | ~35% | ~50% | ~50% | — |")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def _generate_perplexity_report(ppl_data: dict) -> str:
+    lines = ["# Perplexity 평가\n"]
+
+    if not ppl_data:
+        lines.append("데이터 없음\n")
+        return "\n".join(lines)
+
+    rows = []
+    for name, metrics in ppl_data.items():
+        if isinstance(metrics, dict) and "ppl" in metrics:
+            rows.append({
+                "name": name,
+                "ppl": metrics.get("ppl"),
+                "bits": metrics.get("bits_per_token"),
+                "n_tokens": metrics.get("n_tokens"),
+                "n_eval": metrics.get("n_eval_tokens"),
+                "elapsed": metrics.get("elapsed_sec"),
+            })
+
+    rows.sort(key=lambda x: x["ppl"] if isinstance(x["ppl"], (int, float)) else float("inf"),
+              reverse=True)
+
+    lines.append("| 데이터셋 | PPL | Bits/Token | 전체 토큰 | 평가 토큰 | 소요 시간 |")
+    lines.append("|---------|-----|-----------|---------|---------|---------|")
+    for r in rows:
+        lines.append(
+            f"| {r['name']} | {_fmt_f(r['ppl'])} | {_fmt_f(r['bits'])} | "
+            f"{r['n_tokens']:,} | {r['n_eval']:,} | {_fmt_f(r['elapsed'], 1)}s |"
+            if isinstance(r['n_tokens'], (int, float)) and isinstance(r['n_eval'], (int, float))
+            else f"| {r['name']} | {_fmt_f(r['ppl'])} | {_fmt_f(r['bits'])} | "
+                 f"{r['n_tokens']} | {r['n_eval']} | {_fmt_f(r['elapsed'], 1)}s |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _generate_calibration_report(cal_data: dict, nll_data: dict) -> str:
+    lines = ["# Calibration 및 Token NLL 분석\n"]
+
+    # Calibration
+    lines.append("## Calibration 결과\n")
+    if cal_data:
+        lines.append("| 메트릭 | 값 |")
+        lines.append("|--------|-----|")
         metrics_map = {
             "top1_accuracy": "Top-1 Accuracy",
             "top5_accuracy": "Top-5 Accuracy",
@@ -153,343 +353,310 @@ def generate_report(
             "mean_correct_prob": "Mean Correct Prob",
             "mean_entropy": "Mean Entropy",
         }
-        
         for key, label in metrics_map.items():
-            value = cal_data.get(key, "N/A")
-            if isinstance(value, (int, float)):
-                value = f"{value:.4f}"
-            report.append(f"| {label} | {value} |")
-        report.append("")
+            lines.append(f"| {label} | {_fmt_f(cal_data.get(key))} |")
+        lines.append("")
     else:
-        report.append("데이터 없음\n")
-    
-    # ===== 5. Token NLL Distribution =====
-    report.append("## 5. Token NLL 분포\n")
-    if phase1_results.get("token_nll"):
-        nll_data = phase1_results["token_nll"]
-        report.append("### 기본 통계\n")
-        
-        stats_map = {
-            "mean": "평균",
-            "std": "표준편차",
-            "median": "중앙값",
-            "min": "최솟값",
-            "max": "최댓값",
-        }
-        
-        report.append("| 통계 | 값 |")
-        report.append("|------|-----|")
-        for key, label in stats_map.items():
-            value = nll_data.get(key, "N/A")
-            if isinstance(value, (int, float)):
-                value = f"{value:.4f}"
-            report.append(f"| {label} | {value} |")
-        report.append("")
-        
-        # Percentiles
-        if "percentiles" in nll_data:
-            report.append("### Percentiles\n")
-            report.append("| Percentile | 값 |")
-            report.append("|------------|-----|")
-            for pct, value in nll_data["percentiles"].items():
-                if isinstance(value, (int, float)):
-                    value = f"{value:.4f}"
-                report.append(f"| {pct}th | {value} |")
-            report.append("")
-        
-        # High-loss fractions
-        if "high_loss_fractions" in nll_data:
-            report.append("### 고손실 토큰 비율\n")
-            report.append("| 임계값 | 비율 |")
-            report.append("|--------|-----|")
-            for threshold, fraction in nll_data["high_loss_fractions"].items():
-                if isinstance(fraction, (int, float)):
-                    fraction = f"{fraction:.4f}"
-                report.append(f"| NLL > {threshold} | {fraction} |")
-            report.append("")
+        lines.append("데이터 없음\n")
+
+    # Token NLL
+    lines.append("## Token NLL 분포\n")
+    if nll_data:
+        # Keys may be "mean"/"std" or "nll_mean"/"nll_std"
+        stats_map = [
+            (["nll_mean", "mean"], "평균"),
+            (["nll_std", "std"], "표준편차"),
+            (["nll_median", "median"], "중앙값"),
+            (["nll_min", "min"], "최솟값"),
+            (["nll_max", "max"], "최댓값"),
+        ]
+        lines.append("| 통계 | 값 |")
+        lines.append("|------|-----|")
+        for candidates, label in stats_map:
+            val = None
+            for c in candidates:
+                if c in nll_data:
+                    val = nll_data[c]
+                    break
+            lines.append(f"| {label} | {_fmt_f(val)} |")
+        lines.append("")
+
+        # Percentiles: "nll_percentiles" (dict) or "percentiles" (dict)
+        pct_data = nll_data.get("nll_percentiles", nll_data.get("percentiles"))
+        if pct_data and isinstance(pct_data, dict):
+            lines.append("### Percentiles\n")
+            lines.append("| Percentile | 값 |")
+            lines.append("|------------|-----|")
+            for pct, value in pct_data.items():
+                lines.append(f"| {pct}th | {_fmt_f(value)} |")
+            lines.append("")
+
+        # High loss: "high_loss_fractions" (dict) or flat "high_loss_fraction_N" keys
+        hlf = nll_data.get("high_loss_fractions")
+        if hlf and isinstance(hlf, dict):
+            lines.append("### 고손실 토큰 비율\n")
+            lines.append("| 임계값 | 비율 |")
+            lines.append("|--------|-----|")
+            for threshold, fraction in hlf.items():
+                lines.append(f"| NLL > {threshold} | {_fmt_f(fraction)} |")
+            lines.append("")
+        else:
+            # Check flat keys: high_loss_fraction_5, high_loss_fraction_10, ...
+            hlf_flat = {k.replace("high_loss_fraction_", ""): v
+                        for k, v in nll_data.items()
+                        if k.startswith("high_loss_fraction_")}
+            if hlf_flat:
+                lines.append("### 고손실 토큰 비율\n")
+                lines.append("| 임계값 | 비율 |")
+                lines.append("|--------|-----|")
+                for threshold, fraction in sorted(hlf_flat.items()):
+                    lines.append(f"| NLL > {threshold} | {_fmt_f(fraction)} |")
+                lines.append("")
     else:
-        report.append("데이터 없음\n")
-    
-    # ===== 6. Generation Quality =====
-    report.append("## 6. 생성 품질\n")
-    if phase1_results.get("generation"):
-        gen_data = phase1_results["generation"]
-        
-        # Summary stats
-        if "summary" in gen_data:
-            report.append("### 요약 통계\n")
-            summary = gen_data["summary"]
-            report.append("| 메트릭 | 값 |")
-            report.append("|--------|-----|")
-            
-            for key, value in summary.items():
-                if isinstance(value, (int, float)):
-                    value = f"{value:.4f}"
-                # Convert snake_case to readable Korean
-                key_display = key.replace("_", " ").title()
-                report.append(f"| {key_display} | {value} |")
-            report.append("")
-        
-        # Sample outputs (first 5 prompts, greedy only)
-        if generation_samples:
-            report.append("### 생성 샘플 (Greedy)\n")
-            for i, sample in enumerate(generation_samples[:5], 1):
-                if isinstance(sample, dict):
-                    prompt = sample.get("prompt", "")
-                    generated = sample.get("generated_text", "")
-                    
-                    # Truncate to 200 chars
-                    if len(generated) > 200:
-                        generated = generated[:200] + "..."
-                    
-                    report.append(f"#### 샘플 {i}\n")
-                    report.append(f"**Prompt**: {prompt}\n")
-                    report.append(f"**Generated**: {generated}\n")
-            report.append("")
-    else:
-        report.append("데이터 없음\n")
-    
-    # ===== 7. Repetition Parameter Search =====
-    report.append("## 7. Repetition 파라미터 검색\n")
-    if phase1_results.get("repetition") and phase1_results["repetition"].get("grid_results"):
-        rep_data = phase1_results["repetition"]["grid_results"]
-        
-        # Build rows for sorting
+        lines.append("데이터 없음\n")
+
+    return "\n".join(lines)
+
+
+def _generate_generation_report(gen_data: dict, samples: list) -> str:
+    lines = ["# 생성 품질 분석\n"]
+
+    if gen_data and "summary" in gen_data:
+        lines.append("## 요약 통계\n")
+        lines.append("| 메트릭 | 값 |")
+        lines.append("|--------|-----|")
+        for key, value in gen_data["summary"].items():
+            display = key.replace("_", " ").title()
+            lines.append(f"| {display} | {_fmt_f(value)} |")
+        lines.append("")
+
+    if samples:
+        lines.append("## 생성 샘플 (Greedy)\n")
+        for i, sample in enumerate(samples[:5], 1):
+            if isinstance(sample, dict):
+                prompt = sample.get("prompt", "")
+                generated = sample.get("generated_text", "")
+                if len(generated) > 300:
+                    generated = generated[:300] + "..."
+                lines.append(f"### 샘플 {i}\n")
+                lines.append(f"**Prompt**: {prompt}\n")
+                lines.append(f"**Generated**: {generated}\n")
+        lines.append("")
+    elif not gen_data:
+        lines.append("데이터 없음\n")
+
+    return "\n".join(lines)
+
+
+def _generate_benchmark_report(
+    zero_shot: dict,
+    five_shot: dict,
+    repetition: dict,
+) -> str:
+    lines = ["# 표준 벤치마크 결과\n"]
+
+    if not zero_shot and not five_shot:
+        lines.append("데이터 없음\n")
+        return "\n".join(lines)
+
+    # --- Korean Benchmarks ---
+    lines.append("## 한국어 벤치마크\n")
+
+    # KoBEST
+    kobest_names = ["kobest_boolq", "kobest_copa", "kobest_hellaswag",
+                    "kobest_sentineg", "kobest_wic"]
+    kobest_0 = {t: zero_shot[t] for t in kobest_names if t in zero_shot}
+    if kobest_0:
+        lines.append("### KoBEST (0-shot)\n")
+        lines.append("| 태스크 | Accuracy | F1 |")
+        lines.append("|--------|----------|-----|")
+        for t in kobest_names:
+            if t in kobest_0:
+                m = kobest_0[t]
+                acc = _fmt_pct(_get_acc(m))
+                f1 = _fmt_f(m.get("f1,none"))
+                lines.append(f"| {t} | {acc} | {f1} |")
+        kobest_accs = [_get_acc(kobest_0[t]) for t in kobest_names
+                       if t in kobest_0 and _get_acc(kobest_0[t]) is not None]
+        if kobest_accs:
+            lines.append(f"| **평균** | **{_fmt_pct(sum(kobest_accs)/len(kobest_accs))}** | |")
+        lines.append("")
+
+    # HAE-RAE
+    if "haerae" in zero_shot:
+        lines.append("### HAE-RAE (0-shot)\n")
+        m = zero_shot["haerae"]
+        lines.append(f"- Accuracy: {_fmt_pct(_get_acc(m))}")
+        # Check for sub-tasks
+        haerae_subs = {t: zero_shot[t] for t in zero_shot if t.startswith("haerae_") and t != "haerae"}
+        if haerae_subs:
+            lines.append("\n| 서브태스크 | Accuracy |")
+            lines.append("|-----------|----------|")
+            for t, sm in sorted(haerae_subs.items()):
+                lines.append(f"| {t} | {_fmt_pct(_get_acc(sm))} |")
+        lines.append("")
+
+    # MMLU-KO
+    mmlu_ko_tasks = {t: zero_shot[t] for t in zero_shot
+                     if t.startswith("global_mmlu_ko") and t != "global_mmlu_ko"}
+    if mmlu_ko_tasks or "global_mmlu_ko" in zero_shot:
+        lines.append("### MMLU-KO (0-shot)\n")
+        if mmlu_ko_tasks:
+            lines.append(f"평가된 과목 수: **{len(mmlu_ko_tasks)}**\n")
+            accs = [(t, _get_acc(m)) for t, m in sorted(mmlu_ko_tasks.items())
+                    if _get_acc(m) is not None]
+            if accs:
+                # Prefer group-level weighted average from lm-eval
+                group_acc = _get_acc(zero_shot["global_mmlu_ko"]) if "global_mmlu_ko" in zero_shot else None
+                avg_acc = group_acc if group_acc is not None else sum(a for _, a in accs) / len(accs)
+                lines.append(f"전체 평균: **{_fmt_pct(avg_acc)}**\n")
+
+                # Top 10
+                accs_sorted = sorted(accs, key=lambda x: x[1], reverse=True)
+                lines.append("**상위 10개 과목**:\n")
+                lines.append("| 과목 | Accuracy |")
+                lines.append("|------|----------|")
+                for t, a in accs_sorted[:10]:
+                    subject = t.replace("global_mmlu_ko_", "")
+                    lines.append(f"| {subject} | {_fmt_pct(a)} |")
+                lines.append("")
+
+                lines.append("**하위 10개 과목**:\n")
+                lines.append("| 과목 | Accuracy |")
+                lines.append("|------|----------|")
+                for t, a in accs_sorted[-10:]:
+                    subject = t.replace("global_mmlu_ko_", "")
+                    lines.append(f"| {subject} | {_fmt_pct(a)} |")
+                lines.append("")
+        elif "global_mmlu_ko" in zero_shot:
+            a = _get_acc(zero_shot["global_mmlu_ko"])
+            lines.append(f"전체 정확도: {_fmt_pct(a)}\n")
+
+    # --- English Benchmarks ---
+    lines.append("## 영어 벤치마크\n")
+
+    en_tasks = ["hellaswag", "arc_easy", "arc_challenge", "winogrande", "piqa"]
+    en_found = {t: zero_shot[t] for t in en_tasks if t in zero_shot}
+    if en_found:
+        lines.append("### 주요 벤치마크 (0-shot)\n")
+        lines.append("| 태스크 | Accuracy | Acc (norm) |")
+        lines.append("|--------|----------|-----------|")
+        for t in en_tasks:
+            if t in en_found:
+                m = en_found[t]
+                acc = _fmt_pct(_get_acc(m))
+                acc_norm = _fmt_pct(_get_acc(m, prefer_norm=True) if "acc_norm,none" in m else None)
+                lines.append(f"| {t} | {acc} | {acc_norm} |")
+        lines.append("")
+
+    # MMLU-EN
+    mmlu_en_tasks = {t: zero_shot[t] for t in zero_shot
+                     if (t.startswith("mmlu_") or t == "mmlu") and not t.startswith("mmlu_ko")}
+    if mmlu_en_tasks:
+        lines.append("### MMLU-EN (0-shot)\n")
+        # Filter out the group-level "mmlu" if sub-tasks exist
+        subtasks = {t: m for t, m in mmlu_en_tasks.items() if t != "mmlu"}
+        if subtasks:
+            lines.append(f"평가된 과목 수: **{len(subtasks)}**\n")
+            accs = [(t, _get_acc(m)) for t, m in sorted(subtasks.items())
+                    if _get_acc(m) is not None]
+            if accs:
+                avg_acc = sum(a for _, a in accs) / len(accs)
+                lines.append(f"전체 평균: **{_fmt_pct(avg_acc)}**\n")
+
+                accs_sorted = sorted(accs, key=lambda x: x[1], reverse=True)
+                lines.append("**상위 10개 과목**:\n")
+                lines.append("| 과목 | Accuracy |")
+                lines.append("|------|----------|")
+                for t, a in accs_sorted[:10]:
+                    subject = t.replace("mmlu_", "")
+                    lines.append(f"| {subject} | {_fmt_pct(a)} |")
+                lines.append("")
+
+                lines.append("**하위 10개 과목**:\n")
+                lines.append("| 과목 | Accuracy |")
+                lines.append("|------|----------|")
+                for t, a in accs_sorted[-10:]:
+                    subject = t.replace("mmlu_", "")
+                    lines.append(f"| {subject} | {_fmt_pct(a)} |")
+                lines.append("")
+        elif "mmlu" in mmlu_en_tasks:
+            a = _get_acc(mmlu_en_tasks["mmlu"])
+            lines.append(f"전체 정확도: {_fmt_pct(a)}\n")
+
+    # --- 0-shot vs 5-shot Comparison ---
+    if five_shot:
+        lines.append("## 0-shot vs 5-shot 비교\n")
+
+        # Collect all tasks that have both 0-shot and 5-shot results
+        common_tasks = sorted(set(zero_shot.keys()) & set(five_shot.keys()))
+        if common_tasks:
+            lines.append("| 태스크 | 0-shot Acc | 5-shot Acc | 변화 |")
+            lines.append("|--------|-----------|-----------|------|")
+            for t in common_tasks:
+                a0 = _get_acc(zero_shot[t])
+                a5 = _get_acc(five_shot[t])
+                if a0 is not None and a5 is not None:
+                    diff = a5 - a0
+                    sign = "+" if diff >= 0 else ""
+                    lines.append(
+                        f"| {t} | {_fmt_pct(a0)} | {_fmt_pct(a5)} | {sign}{diff*100:.2f}pp |"
+                    )
+                else:
+                    lines.append(f"| {t} | {_fmt_pct(a0)} | {_fmt_pct(a5)} | — |")
+            lines.append("")
+
+            # Summary
+            diffs = []
+            for t in common_tasks:
+                a0 = _get_acc(zero_shot[t])
+                a5 = _get_acc(five_shot[t])
+                if a0 is not None and a5 is not None:
+                    diffs.append(a5 - a0)
+            if diffs:
+                avg_diff = sum(diffs) / len(diffs)
+                improved = sum(1 for d in diffs if d > 0)
+                degraded = sum(1 for d in diffs if d < 0)
+                lines.append(
+                    f"평균 변화: {'+' if avg_diff >= 0 else ''}{avg_diff*100:.2f}pp | "
+                    f"개선: {improved} | 하락: {degraded} | 동일: {len(diffs) - improved - degraded}\n"
+                )
+
+    # --- Repetition ---
+    if repetition and repetition.get("grid_results"):
+        lines.append("## Repetition 파라미터 검색\n")
+        rep_data = repetition["grid_results"]
         rep_rows = []
-        for config, metrics in rep_data.items():
+        # grid_results can be a list of dicts or a dict of dicts
+        items = rep_data.items() if isinstance(rep_data, dict) else enumerate(rep_data)
+        for key, metrics in items:
             if isinstance(metrics, dict):
                 rep_rows.append({
-                    "config": config,
-                    "temp": metrics.get("temperature", "N/A"),
-                    "rep_pen": metrics.get("repetition_penalty", "N/A"),
-                    "3gram": metrics.get("3gram_repetition", float('inf')),
-                    "4gram": metrics.get("4gram_repetition", float('inf')),
-                    "eos_rate": metrics.get("eos_rate", "N/A"),
-                    "avg_tokens": metrics.get("avg_tokens", "N/A"),
-                    "metrics": metrics,
+                    "config": metrics.get("params", str(key)),
+                    "temp": metrics.get("temperature"),
+                    "rep_pen": metrics.get("repetition_penalty"),
+                    "3gram": metrics.get("avg_3gram_rep", metrics.get("3gram_repetition", float("inf"))),
+                    "4gram": metrics.get("avg_4gram_rep", metrics.get("4gram_repetition")),
+                    "eos_rate": metrics.get("eos_rate"),
+                    "avg_tokens": metrics.get("avg_tokens"),
                 })
-        
-        # Sort by 3-gram repetition
-        rep_rows.sort(key=lambda x: x["3gram"] if isinstance(x["3gram"], (int, float)) else float('inf'))
-        
-        report.append("| 설정 | Temperature | Rep Penalty | 3-gram Rep | 4-gram Rep | EOS Rate | Avg Tokens |")
-        report.append("|------|-------------|------------|-----------|-----------|----------|-----------|")
-        
-        for i, row in enumerate(rep_rows):
-            config_label = row["config"]
-            
-            # Format numeric values
-            temp = f"{row['temp']:.2f}" if isinstance(row['temp'], (int, float)) else row['temp']
-            rep_pen = f"{row['rep_pen']:.2f}" if isinstance(row['rep_pen'], (int, float)) else row['rep_pen']
-            gram3 = f"{row['3gram']:.4f}" if isinstance(row['3gram'], (int, float)) else row['3gram']
-            gram4 = f"{row['4gram']:.4f}" if isinstance(row['4gram'], (int, float)) else row['4gram']
-            eos = f"{row['eos_rate']:.4f}" if isinstance(row['eos_rate'], (int, float)) else row['eos_rate']
-            tokens = f"{row['avg_tokens']:.1f}" if isinstance(row['avg_tokens'], (int, float)) else row['avg_tokens']
-            
-            # Highlight best row
-            marker = " ← **최적**" if i == 0 else ""
-            report.append(f"| {config_label} | {temp} | {rep_pen} | {gram3} | {gram4} | {eos} | {tokens} |{marker}")
-        report.append("")
-    else:
-        report.append("데이터 없음\n")
-    
-    # ===== 8. Standard Benchmarks (lm-eval) =====
-    report.append("## 8. 표준 벤치마크\n")
-    if phase2_results:
-        has_benchmarks = False
-        
-        # KoBEST
-        kobest_tasks = ["korsts", "ynat", "klue-sts", "klue-nli"]
-        kobest_results = {k: v for k, v in phase2_results.items() if k in kobest_tasks}
-        
-        if kobest_results:
-            has_benchmarks = True
-            report.append("### KoBEST\n")
-            report.append("| 태스크 | 정확도 |")
-            report.append("|--------|--------|")
-            
-            for task_name, task_data in kobest_results.items():
-                accuracy = "N/A"
-                if isinstance(task_data, dict) and "accuracy" in task_data:
-                    accuracy = f"{task_data['accuracy']:.4f}"
-                elif isinstance(task_data, (int, float)):
-                    accuracy = f"{task_data:.4f}"
-                report.append(f"| {task_name} | {accuracy} |")
-            report.append("")
-        
-        # Global MMLU (Korean)
-        if "global_mmlu_ko" in phase2_results:
-            has_benchmarks = True
-            report.append("### Global MMLU (Korean)\n")
-            mmlu_data = phase2_results["global_mmlu_ko"]
-            
-            if isinstance(mmlu_data, dict):
-                overall_acc = mmlu_data.get("accuracy", "N/A")
-                if isinstance(overall_acc, (int, float)):
-                    overall_acc = f"{overall_acc:.4f}"
-                report.append(f"**전체 정확도**: {overall_acc}\n")
-                
-                # Per-subject breakdown if available
-                if "subject_breakdown" in mmlu_data:
-                    subjects = mmlu_data["subject_breakdown"]
-                    # Top 10 / Bottom 10
-                    sorted_subjects = sorted(
-                        subjects.items(),
-                        key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0,
-                        reverse=True
-                    )
-                    
-                    report.append("**상위 10개 과목**:\n")
-                    report.append("| 과목 | 정확도 |")
-                    report.append("|------|--------|")
-                    for subject, acc in sorted_subjects[:10]:
-                        acc_str = f"{acc:.4f}" if isinstance(acc, (int, float)) else acc
-                        report.append(f"| {subject} | {acc_str} |")
-                    report.append("")
-                    
-                    report.append("**하위 10개 과목**:\n")
-                    report.append("| 과목 | 정확도 |")
-                    report.append("|------|--------|")
-                    for subject, acc in sorted_subjects[-10:]:
-                        acc_str = f"{acc:.4f}" if isinstance(acc, (int, float)) else acc
-                        report.append(f"| {subject} | {acc_str} |")
-                    report.append("")
-            report.append("")
-        
-        # PAWS-KO
-        if "paws_ko" in phase2_results:
-            has_benchmarks = True
-            report.append("### PAWS-KO\n")
-            paws_data = phase2_results["paws_ko"]
-            
-            accuracy = "N/A"
-            if isinstance(paws_data, dict) and "accuracy" in paws_data:
-                accuracy = f"{paws_data['accuracy']:.4f}"
-            elif isinstance(paws_data, (int, float)):
-                accuracy = f"{paws_data:.4f}"
-            
-            report.append(f"| 정확도 | {accuracy} |")
-            report.append("|--------|--------|")
-            report.append("")
-        
-        if not has_benchmarks:
-            report.append("데이터 없음\n")
-    else:
-        report.append("데이터 없음\n")
-    
-    # ===== 9. Reference Comparison =====
-    report.append("## 9. 참고 모델 비교\n")
-    report.append("| 모델 | 파라미터 | MMLU (ko) | KoBEST 평균 | PPL |")
-    report.append("|------|---------|-----------|------------|-----|")
-    report.append(f"| FRANKENSTALLM 3B | 3B | {mmlu_ko_acc} | {kobest_avg} | {main_ppl} |")
-    report.append("| Llama-3.2-3B | 3B | ~42 | ~55 | — |")
-    report.append("| Qwen2.5-3B | 3B | ~48 | ~60 | — |")
-    report.append("| EXAONE-3.5-2.4B | 2.4B | ~35 | ~50 | — |")
-    report.append("")
-    
-    # ===== 10. GPU/Time Statistics =====
-    report.append("## 10. 컴퓨팅 자원 통계\n")
-    report.append("| Phase | Task | 소요 시간(s) | 상태 |")
-    report.append("|-------|------|------------|------|")
-    
-    # Extract timing from phase1
-    if phase1_results.get("perplexity"):
-        report.append("| Phase 1 | Perplexity | - | 완료 |")
-    if phase1_results.get("calibration"):
-        report.append("| Phase 1 | Calibration | - | 완료 |")
-    if phase1_results.get("token_nll"):
-        report.append("| Phase 1 | Token NLL | - | 완료 |")
-    if phase1_results.get("generation"):
-        report.append("| Phase 1 | Generation | - | 완료 |")
-    if phase1_results.get("repetition"):
-        report.append("| Phase 1 | Repetition Search | - | 완료 |")
-    
-    # Phase 2 benchmarks
-    if phase2_results:
-        report.append("| Phase 2 | Standard Benchmarks | - | 완료 |")
-    
-    report.append(f"| **전체** | **모든 평가** | **{total_elapsed_sec:.1f}** | **완료** |")
-    report.append("")
-    
-    # ===== Footer =====
-    report.append("---\n")
-    report.append("*이 리포트는 자동으로 생성되었습니다.*")
-    
-    # Join all lines
-    report_markdown = "\n".join(report)
-    
-    # Write to file
-    report_path = output_dir / "full_eval_report.md"
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report_markdown)
-    
-    return report_markdown
+        rep_rows.sort(key=lambda x: x["3gram"] if isinstance(x["3gram"], (int, float)) else float("inf"))
+
+        lines.append("| 설정 | Temp | Rep Pen | 3-gram | 4-gram | EOS Rate | Avg Tokens |")
+        lines.append("|------|------|---------|--------|--------|----------|-----------|")
+        for i, r in enumerate(rep_rows):
+            marker = " **← best**" if i == 0 else ""
+            lines.append(
+                f"| {r['config']} | {_fmt_f(r['temp'], 2)} | {_fmt_f(r['rep_pen'], 2)} | "
+                f"{_fmt_f(r['3gram'])} | {_fmt_f(r['4gram'])} | "
+                f"{_fmt_f(r['eos_rate'])} | {_fmt_f(r['avg_tokens'], 1)} |{marker}"
+            )
+        lines.append("")
+
+    lines.append("---\n")
+    lines.append("*이 리포트는 자동으로 생성되었습니다.*")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
-    # Example usage
-    example_phase1 = {
-        "perplexity": {
-            "3b_val": {"ppl": 8.5234, "bits_per_token": 3.0912, "n_tokens": 1000000, "n_eval_tokens": 950000, "elapsed_sec": 123.5},
-            "wikitext": {"ppl": 12.3456, "bits_per_token": 3.6543, "n_tokens": 500000, "n_eval_tokens": 480000, "elapsed_sec": 67.2},
-        },
-        "calibration": {
-            "top1_accuracy": 0.7823,
-            "top5_accuracy": 0.9234,
-            "top10_accuracy": 0.9567,
-            "mean_correct_prob": 0.6521,
-            "mean_entropy": 1.2345,
-        },
-        "token_nll": {
-            "mean": 2.3456,
-            "std": 1.2345,
-            "median": 2.1234,
-            "min": 0.0234,
-            "max": 8.9876,
-            "percentiles": {"5": 0.5234, "25": 1.2345, "75": 3.4567, "95": 5.6789, "99": 7.8901},
-            "high_loss_fractions": {"5": 0.1234, "10": 0.0567},
-        },
-        "generation": {
-            "summary": {"avg_length": 45.6, "repetition_ratio": 0.0234, "unique_tokens": 8567},
-        },
-        "repetition": {
-            "grid_results": {
-                "config_1": {"temperature": 0.7, "repetition_penalty": 1.0, "3gram_repetition": 0.0123, "4gram_repetition": 0.0045, "eos_rate": 0.95, "avg_tokens": 47.2},
-                "config_2": {"temperature": 0.8, "repetition_penalty": 1.2, "3gram_repetition": 0.0234, "4gram_repetition": 0.0089, "eos_rate": 0.92, "avg_tokens": 49.1},
-            }
-        }
-    }
-    
-    example_phase2 = {
-        "korsts": {"accuracy": 0.8234},
-        "ynat": {"accuracy": 0.7654},
-        "klue-sts": {"accuracy": 0.7899},
-        "klue-nli": {"accuracy": 0.7432},
-        "global_mmlu_ko": {
-            "accuracy": 0.4567,
-            "subject_breakdown": {
-                "biology": 0.5234,
-                "chemistry": 0.4123,
-                "history": 0.4567,
-            }
-        },
-        "paws_ko": {"accuracy": 0.8765},
-    }
-    
-    example_samples = [
-        {"prompt": "한국의 수도는", "generated_text": "서울이다. 서울은 한반도의 중부에 위치한 대한민국의 행정 수도이며, 정치, 경제, 문화의 중심지이다."},
-        {"prompt": "AI의 미래는", "generated_text": "밝다고 전문가들은 예측하고 있다. 인공지능 기술의 발전은 다양한 산업에 혁신을 가져올 것으로 기대된다."},
-    ]
-    
-    output_path = Path("/tmp")
-    report = generate_report(
-        phase1_results=example_phase1,
-        phase2_results=example_phase2,
-        generation_samples=example_samples,
-        output_dir=output_path,
-        checkpoint_name="checkpoint-0057000",
-        total_elapsed_sec=567.8,
-    )
-    
-    print("Report generated successfully!")
-    print(f"Saved to: {output_path / 'full_eval_report.md'}")
+    print("report_generator.py — use via full_eval_pipeline.py or reeval_pipeline.py")

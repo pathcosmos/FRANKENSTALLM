@@ -199,7 +199,8 @@ def build_optimizer_param_groups(
         torch.nn.LayerNorm,
     )
     # Also skip any parameter whose name ends with '.bias' or 'norm'.
-    no_decay_name_suffixes = ("bias",)
+    # Mamba-2 SSM parameters that should never be decayed
+    no_decay_name_suffixes = ("bias", "A_log", "D", "dt_bias")
 
     # Collect module-level exclusions.
     no_decay_module_params: set[int] = set()

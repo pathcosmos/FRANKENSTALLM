@@ -49,6 +49,17 @@ class LMConfig:
     # FP8 quantization
     use_fp8: bool = False
 
+    # Hybrid Mamba-Transformer settings
+    use_hybrid: bool = False
+    hybrid_pattern: str = ""  # e.g. "M M A M M M M A M M M M M M M M M M A M" for 40-layer Nemotron-H style
+    # Mamba-2 SSM parameters
+    mamba_d_state: int = 128
+    mamba_head_dim: int = 64
+    mamba_expand: int = 2
+    mamba_conv_kernel: int = 4
+    mamba_n_groups: int = 1
+    mamba_chunk_size: int = 256
+
     def __post_init__(self) -> None:
         # Resolve n_kv_heads: None → full MHA
         if self.n_kv_heads is None:
@@ -66,6 +77,13 @@ class LMConfig:
         if self.d_ffn is None:
             raw = int(8 / 3 * self.d_model)
             self.d_ffn = _round_to_multiple(raw, 256)
+
+        # Hybrid Mamba-Transformer validation
+        if self.use_hybrid and not self.hybrid_pattern.strip():
+            raise ValueError(
+                "use_hybrid=True requires a non-empty hybrid_pattern "
+                "(space-separated 'M'/'A' per layer)"
+            )
 
         # FP8 alignment: TE requires dimensions divisible by 16
         if self.use_fp8:
@@ -107,6 +125,14 @@ class LMConfig:
             "bias": self.bias,
             "use_flash_attn": self.use_flash_attn,
             "use_fp8": self.use_fp8,
+            "use_hybrid": self.use_hybrid,
+            "hybrid_pattern": self.hybrid_pattern,
+            "mamba_d_state": self.mamba_d_state,
+            "mamba_head_dim": self.mamba_head_dim,
+            "mamba_expand": self.mamba_expand,
+            "mamba_conv_kernel": self.mamba_conv_kernel,
+            "mamba_n_groups": self.mamba_n_groups,
+            "mamba_chunk_size": self.mamba_chunk_size,
         }
 
     def to_yaml(self, path: str | Path) -> None:

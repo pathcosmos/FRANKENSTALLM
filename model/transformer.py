@@ -1,5 +1,6 @@
 """
 Full transformer: TransformerBlock and top-level LLM model.
+Supports pure Transformer and hybrid Mamba-2 + Transformer architectures.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import torch.nn.functional as F
 from .config import LMConfig
 from .layers import RMSNorm, RotaryEmbedding, SwiGLU
 from .attention import MultiHeadAttention
+from .mamba_block import Mamba2Block
 
 # ---------------------------------------------------------------------------
 # Optional TransformerEngine import (FP8 support)
@@ -106,10 +108,41 @@ class LLM(nn.Module):
         # --- Embedding -------------------------------------------------------
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
 
-        # --- Transformer layers ----------------------------------------------
-        self.layers = nn.ModuleList(
-            [TransformerBlock(config) for _ in range(config.n_layers)]
-        )
+        # --- Layers (pure Transformer or hybrid Mamba-Transformer) -----------
+        if config.use_hybrid and config.hybrid_pattern:
+            pattern = config.hybrid_pattern.strip().split()
+            if len(pattern) != config.n_layers:
+                raise ValueError(
+                    f"hybrid_pattern has {len(pattern)} entries but "
+                    f"n_layers={config.n_layers}"
+                )
+            layers: list[nn.Module] = []
+            # Track which layers are Mamba vs Attention for forward dispatch
+            self._layer_types: list[str] = pattern
+            for layer_type in pattern:
+                if layer_type == "M":
+                    layers.append(Mamba2Block(
+                        d_model=config.d_model,
+                        d_state=config.mamba_d_state,
+                        head_dim=config.mamba_head_dim,
+                        expand=config.mamba_expand,
+                        conv_kernel=config.mamba_conv_kernel,
+                        n_groups=config.mamba_n_groups,
+                        chunk_size=config.mamba_chunk_size,
+                    ))
+                elif layer_type == "A":
+                    layers.append(TransformerBlock(config))
+                else:
+                    raise ValueError(
+                        f"Unknown layer type '{layer_type}' in hybrid_pattern. "
+                        f"Use 'M' (Mamba) or 'A' (Attention)."
+                    )
+            self.layers = nn.ModuleList(layers)
+        else:
+            self._layer_types = ["A"] * config.n_layers
+            self.layers = nn.ModuleList(
+                [TransformerBlock(config) for _ in range(config.n_layers)]
+            )
 
         # --- Final normalisation and LM head ---------------------------------
         self.norm    = RMSNorm(config.d_model)
@@ -139,9 +172,13 @@ class LLM(nn.Module):
         - Linear / Embedding weights: N(0, 0.02)
         - Bias parameters: zeros
         - te.Linear / te.LayerNormMLP: skipped (TE manages its own init)
+        - Mamba2Block: skipped (manages its own init)
         """
         # TE modules handle their own weight initialisation.
         if HAS_TE and isinstance(module, (te.Linear, te.LayerNormMLP)):
+            return
+        # Mamba2Block handles its own parameter init (A_log, D, dt_bias, etc.)
+        if isinstance(module, Mamba2Block):
             return
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -174,11 +211,15 @@ class LLM(nn.Module):
         x = self.embedding(input_ids)
 
         # Rotary cos/sin for this sequence length: (T, head_dim // 2)
+        # Only needed for Attention layers, but precomputed once for all.
         cos, sin = self.rope(T, device)
 
-        # Run through transformer blocks
-        for layer in self.layers:
-            x = layer(x, cos, sin)
+        # Run through blocks — Mamba blocks ignore cos/sin
+        for layer, ltype in zip(self.layers, self._layer_types):
+            if ltype == "M":
+                x = layer(x)
+            else:
+                x = layer(x, cos, sin)
 
         # Final normalisation
         x = self.norm(x)

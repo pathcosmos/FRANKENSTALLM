@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import signal
 import shutil
 import sys
 from pathlib import Path
@@ -203,6 +204,43 @@ def parse_args() -> argparse.Namespace:
             "Ignored when running under torchrun (DDP auto-assigns devices)."
         ),
     )
+
+    parser.add_argument(
+        "--config", type=Path, default=None,
+        help="YAML config file. Values under 'train:' section are used as CLI defaults.",
+    )
+    parser.add_argument("--save_interval", type=int, default=500, help="Checkpoint save interval (steps).")
+    parser.add_argument("--eval_interval", type=int, default=250, help="Validation eval interval (steps).")
+    parser.add_argument("--neftune_alpha", type=float, default=5.0, help="NEFTune noise magnitude (0 to disable).")
+
+    # First pass: just get --config
+    args, remaining = parser.parse_known_args()
+
+    # Load YAML config and apply values as defaults
+    if args.config is not None:
+        if not args.config.exists():
+            raise FileNotFoundError(f"Config file not found: {args.config}")
+        import yaml
+        with open(args.config, "r") as f:
+            yaml_cfg = yaml.safe_load(f)
+        train_section = yaml_cfg.get("train", {})
+        yaml_to_arg = {
+            "max_steps": "max_steps",
+            "batch_size": "batch_size",
+            "lr": "lr",
+            "weight_decay": "weight_decay",
+            "warmup_steps": "warmup_steps",
+            "grad_accum_steps": "grad_accum",
+            "save_interval": "save_interval",
+            "eval_interval": "eval_interval",
+            "neftune_alpha": "neftune_alpha",
+        }
+        new_defaults = {}
+        for yaml_key, arg_name in yaml_to_arg.items():
+            if yaml_key in train_section:
+                new_defaults[arg_name] = train_section[yaml_key]
+        if new_defaults:
+            parser.set_defaults(**new_defaults)
 
     return parser.parse_args()
 
@@ -464,6 +502,21 @@ def main() -> None:
     # Per-rank seed so data shuffling differs across replicas.
     set_seed(args.seed + rank)
 
+    # ---- NUMA affinity for optimal GPU↔CPU memory locality ---------------
+    # B200 topology: GPU 0-3 → NUMA node 0 (cores 0-35)
+    #                GPU 4-7 → NUMA node 1 (cores 36-71)
+    try:
+        if local_rank < 4:
+            os.sched_setaffinity(0, set(range(0, 36)))   # NUMA node 0
+        else:
+            os.sched_setaffinity(0, set(range(36, 72)))   # NUMA node 1
+        if is_main_process():
+            print(f"NUMA affinity: rank {rank} (GPU {local_rank}) → "
+                  f"{'NUMA0 cores 0-35' if local_rank < 4 else 'NUMA1 cores 36-71'}")
+    except (AttributeError, OSError) as e:
+        if is_main_process():
+            print(f"[WARN] NUMA affinity failed: {e}")
+
     # ---- Validate base checkpoint ------------------------------------------
     if not args.base_checkpoint.exists():
         raise FileNotFoundError(
@@ -524,6 +577,9 @@ def main() -> None:
             model,
             device_ids=[local_rank],
             output_device=local_rank,
+            gradient_as_bucket_view=True,
+            bucket_cap_mb=800,
+            find_unused_parameters=False,
         )
 
     # ---- Tokenizer ---------------------------------------------------------
@@ -627,10 +683,9 @@ def main() -> None:
         grad_accum_steps=args.grad_accum,
         use_fp8=use_fp8,
         log_file=str(args.log_file) if args.log_file is not None else None,
-        # SFT runs are short — save and log more frequently.
-        save_interval=500,
+        save_interval=args.save_interval,
         log_interval=10,
-        eval_interval=250,
+        eval_interval=args.eval_interval,
     )
 
     # ---- LR Scheduler ------------------------------------------------------
@@ -658,6 +713,13 @@ def main() -> None:
         if is_main_process():
             print(f"Resumed SFT from {args.resume} at step {start_step} (loss={resume_loss:.4f})")
 
+    if args.resume is not None and isinstance(train_sampler, DistributedSampler):
+        steps_per_epoch = len(train_loader)
+        approx_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+        train_sampler.set_epoch(approx_epoch)
+        if is_main_process():
+            print(f"[INFO] Resume: sampler epoch set to {approx_epoch}")
+
     # ---- Checkpoint directory ----------------------------------------------
     args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -682,6 +744,32 @@ def main() -> None:
         sampler=train_sampler if is_ddp else None,
         val_loader=val_loader,
     )
+
+    # ---- Signal handlers for graceful shutdown ----------------------------
+    import signal as _signal_mod
+
+    _trainer_ref = trainer
+
+    def _graceful_shutdown_handler(signum, frame):
+        sig_name = _signal_mod.Signals(signum).name
+        if is_main_process():
+            import datetime as _dt
+            ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            msg = (
+                f"[{ts}] [SIGNAL] Received {sig_name} (signum={signum}). "
+                f"Initiating graceful shutdown..."
+            )
+            print(f"\n{msg}")
+            if args.log_file is not None:
+                try:
+                    with open(args.log_file, "a", encoding="utf-8") as f:
+                        f.write(msg + "\n")
+                except Exception:
+                    pass
+        _trainer_ref.request_shutdown(sig_name)
+
+    for _sig in (_signal_mod.SIGHUP, _signal_mod.SIGTERM):
+        _signal_mod.signal(_sig, _graceful_shutdown_handler)
 
     # ---- SFT banner --------------------------------------------------------
     if is_main_process():
@@ -721,9 +809,13 @@ def main() -> None:
     # Add uniform noise to embeddings during training to improve instruction
     # following (Jain et al., 2023).  Hook is registered on the raw (non-DDP)
     # model so it survives DDP's internal module wrapping.
-    neftune_handle = add_neftune_hook(raw_model, noise_alpha=5.0)
+    neftune_alpha = getattr(args, 'neftune_alpha', 5.0)
+    neftune_handle = add_neftune_hook(raw_model, noise_alpha=neftune_alpha)
     if rank == 0:
-        print("[INFO] NEFTune enabled (noise_alpha=5.0)")
+        if neftune_handle is not None:
+            print(f"[INFO] NEFTune enabled (noise_alpha={neftune_alpha})")
+        else:
+            print("[WARN] NEFTune disabled - embedding layer not found")
 
     # ---- Train -------------------------------------------------------------
     try:

@@ -480,7 +480,10 @@ class Trainer:
             total_batches += 1
 
         model.train()
-        return total_loss / max(total_batches, 1)
+        if total_batches == 0:
+            self._log("Validation set is empty — returning inf", level="WARN")
+            return float("inf")
+        return total_loss / total_batches
 
     def _log(self, msg: str, level: str = "INFO") -> None:
         """Print to stdout and optionally write to the log file."""
@@ -519,6 +522,8 @@ class Trainer:
         device_type = self.device.type
         # te.fp8_autocast must be combined with torch.autocast(bfloat16) so that
         # all tensors entering TE modules are in BF16 (not FP32 master weights).
+        # te.fp8_autocast only affects TE modules (te.Linear, te.LayerNormMLP).
+        # Hybrid Mamba-2 layers use nn.Linear → stay in bf16 under torch.autocast.
         with contextlib.ExitStack() as stack:
             if self.config.use_fp8 and self._fp8_recipe is not None:
                 stack.enter_context(

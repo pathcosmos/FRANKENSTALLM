@@ -192,15 +192,18 @@ def _spawn_task(
 
 def _wait_and_collect(
     processes: List[Tuple[subprocess.Popen, str, Path, Any]],
+    max_timeout_sec: float = 3600.0,
 ) -> Dict[str, Any]:
     """Poll all spawned processes until completion and collect their JSON results.
 
     Each task_runner.py writes its result to output_path as JSON on success.
     On failure, the error and last 2000 chars of log are captured.
+    Processes still running after *max_timeout_sec* are terminated.
     """
     results: Dict[str, Any] = {}
     success_count = 0
     failure_count = 0
+    start_time = time.time()
 
     remaining = list(processes)
     while remaining:
@@ -237,6 +240,22 @@ def _wait_and_collect(
                 logger.error("  [FAILED] %s — exit code %d", label, ret)
 
         remaining = still_running
+
+        # Timeout guard — terminate hung processes
+        if remaining and (time.time() - start_time) > max_timeout_sec:
+            logger.error(
+                "  Timeout reached (%.0fs). Terminating %d remaining processes.",
+                max_timeout_sec, len(remaining),
+            )
+            for proc, label, out_path, log_file in remaining:
+                proc.terminate()
+                log_file.close()
+                results[label] = {"error": f"Timeout after {max_timeout_sec:.0f}s"}
+                failure_count += 1
+                logger.error("  [TIMEOUT] %s", label)
+            remaining = []
+            break
+
         if remaining:
             time.sleep(2)  # poll every 2 seconds
 
@@ -593,82 +612,19 @@ def run_phase1(output_dir: Path, gpu_ids: List[int]) -> Dict[str, Any]:
 # Phase 2 — lm-eval Benchmarks (8 GPU, subprocess.Popen isolated)
 # ===========================================================================
 
-def _build_mmlu_ko_quarters() -> List[Tuple[int, List[str], str]]:
-    """Split global_mmlu_ko into 4 quarter task lists for GPUs 4-7.
-
-    lm-eval tasks follow the pattern global_mmlu_ko_<subject>. Since the
-    exact subject list depends on the installed lm-eval version, we use a
-    representative list here. At runtime, unknown task names are simply
-    skipped by lm-eval.
-    """
-    mmlu_ko_subjects = [
-        "global_mmlu_ko_abstract_algebra",
-        "global_mmlu_ko_anatomy",
-        "global_mmlu_ko_astronomy",
-        "global_mmlu_ko_business_ethics",
-        "global_mmlu_ko_clinical_knowledge",
-        "global_mmlu_ko_college_biology",
-        "global_mmlu_ko_college_chemistry",
-        "global_mmlu_ko_college_computer_science",
-        "global_mmlu_ko_college_mathematics",
-        "global_mmlu_ko_college_medicine",
-        "global_mmlu_ko_college_physics",
-        "global_mmlu_ko_computer_security",
-        "global_mmlu_ko_conceptual_physics",
-        "global_mmlu_ko_econometrics",
-        "global_mmlu_ko_electrical_engineering",
-        "global_mmlu_ko_elementary_mathematics",
-        "global_mmlu_ko_formal_logic",
-        "global_mmlu_ko_global_facts",
-        "global_mmlu_ko_high_school_biology",
-        "global_mmlu_ko_high_school_chemistry",
-        "global_mmlu_ko_high_school_computer_science",
-        "global_mmlu_ko_high_school_european_history",
-        "global_mmlu_ko_high_school_geography",
-        "global_mmlu_ko_high_school_government_and_politics",
-        "global_mmlu_ko_high_school_macroeconomics",
-        "global_mmlu_ko_high_school_mathematics",
-        "global_mmlu_ko_high_school_microeconomics",
-        "global_mmlu_ko_high_school_physics",
-        "global_mmlu_ko_high_school_psychology",
-        "global_mmlu_ko_high_school_statistics",
-        "global_mmlu_ko_high_school_us_history",
-        "global_mmlu_ko_high_school_world_history",
-        "global_mmlu_ko_human_aging",
-        "global_mmlu_ko_human_sexuality",
-        "global_mmlu_ko_international_law",
-        "global_mmlu_ko_jurisprudence",
-        "global_mmlu_ko_logical_fallacies",
-        "global_mmlu_ko_machine_learning",
-        "global_mmlu_ko_management",
-        "global_mmlu_ko_marketing",
-        "global_mmlu_ko_medical_genetics",
-        "global_mmlu_ko_miscellaneous",
-        "global_mmlu_ko_moral_disputes",
-        "global_mmlu_ko_moral_scenarios",
-        "global_mmlu_ko_nutrition",
-        "global_mmlu_ko_philosophy",
-        "global_mmlu_ko_prehistory",
-        "global_mmlu_ko_professional_accounting",
-        "global_mmlu_ko_professional_law",
-        "global_mmlu_ko_professional_medicine",
-        "global_mmlu_ko_professional_psychology",
-        "global_mmlu_ko_public_relations",
-        "global_mmlu_ko_security_studies",
-        "global_mmlu_ko_sociology",
-        "global_mmlu_ko_us_foreign_policy",
-        "global_mmlu_ko_virology",
-        "global_mmlu_ko_world_religions",
-    ]
-    return mmlu_ko_subjects
-
-
-# Fixed benchmark task groups (in priority order)
+# Benchmark task groups — balanced for 8 GPU parallel execution.
+# MMLU-EN is split into 2 category groups to avoid a single GPU bottleneck
+# (previously: 1 GPU took 210s for all 57 MMLU subtasks while others finished in 83-108s).
+# lm-eval 0.4.x provides mmlu_humanities, mmlu_social_sciences, mmlu_stem, mmlu_other.
 _BENCHMARK_GROUPS = [
-    (["kobest_boolq", "kobest_copa"], "KoBEST: boolq + copa"),
+    (["kobest_boolq", "kobest_copa", "kobest_wic"], "KoBEST: boolq + copa + wic"),
     (["kobest_hellaswag", "kobest_sentineg"], "KoBEST: hellaswag + sentineg"),
-    (["kobest_wic"], "KoBEST: wic"),
     (["haerae"], "HAE-RAE (all subtasks)"),
+    (["global_mmlu_ko"], "MMLU-KO (57 subtasks)"),
+    (["hellaswag", "arc_easy", "arc_challenge"], "EN: hellaswag + arc_easy + arc_challenge"),
+    (["winogrande", "piqa"], "EN: winogrande + piqa"),
+    (["mmlu_humanities", "mmlu_social_sciences"], "MMLU-EN: humanities + social_sciences"),
+    (["mmlu_stem", "mmlu_other"], "MMLU-EN: stem + other"),
 ]
 
 
@@ -680,31 +636,21 @@ def _build_phase2_tasks(gpu_ids: List[int]) -> List[Tuple[int, List[str], str]]:
     if n <= 0:
         return task_list
 
-    # Assign fixed benchmarks to first min(n, 4) GPUs
-    fixed_count = min(n, len(_BENCHMARK_GROUPS))
-    for i in range(fixed_count):
-        tasks, label = _BENCHMARK_GROUPS[i]
-        task_list.append((gpu_ids[i], tasks, f"GPU {gpu_ids[i]} — {label}"))
-
-    # If fewer GPUs than fixed benchmarks, merge remaining benchmarks into last fixed GPU
-    if n < len(_BENCHMARK_GROUPS):
-        for i in range(n, len(_BENCHMARK_GROUPS)):
-            extra_tasks, extra_label = _BENCHMARK_GROUPS[i]
-            gpu_id, existing_tasks, existing_label = task_list[-1]
-            task_list[-1] = (gpu_id, existing_tasks + extra_tasks,
-                             f"{existing_label} + {extra_label}")
-
-    # Remaining GPUs get MMLU-KO quarters
-    mmlu_gpus = gpu_ids[fixed_count:]
-    if mmlu_gpus:
-        mmlu_subjects = _build_mmlu_ko_quarters()
-        n_parts = len(mmlu_gpus)
-        chunk_size = (len(mmlu_subjects) + n_parts - 1) // n_parts
-        for i, gpu_id in enumerate(mmlu_gpus):
-            chunk = mmlu_subjects[i * chunk_size: (i + 1) * chunk_size]
-            if chunk:
-                task_list.append((gpu_id, chunk,
-                                  f"GPU {gpu_id} — MMLU-KO part {i+1}/{n_parts}"))
+    # Assign benchmark groups to GPUs (round-robin if fewer GPUs than groups)
+    for i, (tasks, label) in enumerate(_BENCHMARK_GROUPS):
+        gpu_id = gpu_ids[i % n]
+        # If GPU already has tasks assigned (round-robin wrap), merge
+        existing = None
+        for j, (gid, existing_tasks, existing_label) in enumerate(task_list):
+            if gid == gpu_id:
+                existing = j
+                break
+        if existing is not None:
+            gid, existing_tasks, existing_label = task_list[existing]
+            task_list[existing] = (gid, existing_tasks + tasks,
+                                   f"{existing_label} + {label}")
+        else:
+            task_list.append((gpu_id, tasks, f"GPU {gpu_id} — {label}"))
 
     return task_list
 

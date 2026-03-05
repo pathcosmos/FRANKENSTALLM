@@ -16,7 +16,7 @@ OUT_DIR="$BASE/data/sft_combined"
 mkdir -p "$OUT_DIR"
 
 python3 << 'PYEOF'
-import json, random, os, glob
+import json, random, os, glob, hashlib
 from collections import defaultdict
 
 BASE = "/PROJECT/0325120031_A/ghong/taketimes/llm-bang/data"
@@ -126,7 +126,8 @@ def load_oasst(path):
     # 자식 목록을 rank 오름차순 정렬 (rank=null은 뒤로)
     def sort_key(c):
         r = c.get('rank')
-        return (1, 0) if r is None else (0, r)
+        mid = c.get('message_id', '')
+        return (1, 0, mid) if r is None else (0, r, mid)
     for pid in children:
         children[pid].sort(key=sort_key)
 
@@ -196,8 +197,53 @@ for path, fmt in SOURCES:
                     all_samples.append({'messages': msgs})
                     count += 1
     print(f"[LOADED] {os.path.basename(path)}: {count:,} samples")
+    if count == 0:
+        print(f"[WARN] {os.path.basename(path)}: 0 samples extracted (format detection may have failed)")
 
 print(f"\n총 샘플: {len(all_samples):,}")
+
+# ---- Deduplication (MD5 of first user message) ----
+seen_hashes = set()
+unique_samples = []
+dup_count = 0
+for s in all_samples:
+    msgs = s.get('messages', [])
+    first_user = next((m['content'] for m in msgs if m.get('role') == 'user'), '')
+    h = hashlib.md5(first_user.encode('utf-8', errors='replace')).hexdigest()
+    if h in seen_hashes:
+        dup_count += 1
+        continue
+    seen_hashes.add(h)
+    unique_samples.append(s)
+
+print(f"[DEDUP] 제거: {dup_count:,}, 남은 샘플: {len(unique_samples):,}")
+all_samples = unique_samples
+
+# ---- Format validation ----
+def validate_messages(msgs):
+    """Check messages have valid role/content structure."""
+    if not isinstance(msgs, list) or len(msgs) < 2:
+        return False
+    for m in msgs:
+        if not isinstance(m, dict):
+            return False
+        if m.get('role') not in ('user', 'assistant', 'system'):
+            return False
+        if not isinstance(m.get('content'), str):
+            return False
+    return True
+
+valid_samples = []
+invalid_count = 0
+for s in all_samples:
+    if validate_messages(s.get('messages', [])):
+        valid_samples.append(s)
+    else:
+        invalid_count += 1
+
+print(f"[VALIDATE] 유효하지 않은 포맷 제거: {invalid_count:,}, 남은 샘플: {len(valid_samples):,}")
+all_samples = valid_samples
+
 random.shuffle(all_samples)
 
 n_val = int(len(all_samples) * VAL_RATIO)
