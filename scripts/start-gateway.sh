@@ -2,9 +2,9 @@
 # start-gateway.sh — OpenClaw 게이트웨이 직접 시작 (독립 프로세스)
 set -euo pipefail
 
-RNTIER_HOME="REDACTED_RNTIER_PATH"
+RNTIER_HOME="${RNTIER_HOME:-$HOME}"
 export PATH="${RNTIER_HOME}/.npm-global/bin:/usr/bin:/usr/local/bin:/bin:$PATH"
-export HOME="/home/ghong"
+export HOME="${HOME:-/home/ghong}"
 export OPENCLAW_STATE_DIR="${RNTIER_HOME}/.openclaw"
 export OPENCLAW_CONFIG_PATH="${RNTIER_HOME}/.openclaw/openclaw.json"
 

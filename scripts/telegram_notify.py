@@ -11,6 +11,7 @@ Function API:
     send_telegram("message text")
 """
 
+import os
 import sys
 import json
 import urllib.request
@@ -20,8 +21,8 @@ import logging
 from typing import Optional
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-BOT_TOKEN = "REDACTED_TOKEN"
-CHAT_ID   = "REDACTED_CHAT_ID"
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 TIMEOUT   = 15  # seconds
 MAX_MSG_LEN = 4096  # Telegram limit
 

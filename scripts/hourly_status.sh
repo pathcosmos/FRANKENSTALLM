@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
-WORKDIR="/PROJECT/0325120031_A/ghong/taketimes/llm-bang"
+WORKDIR="${WORKDIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 CKPT_DIR="$WORKDIR/checkpoints/korean_3b_fp8_run1"
 LOG_FILE="$CKPT_DIR/train.log"
 PID_FILE="$CKPT_DIR/train.pid"

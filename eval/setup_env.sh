@@ -2,8 +2,8 @@
 # lm-eval environment setup script
 # Sets up Python path and environment variables for lm-eval evaluation
 
-export PYTHONPATH=REDACTED_RNTIER_PATH/.local/lib/python3.12/site-packages:$PYTHONPATH
-export LM_EVAL_BIN=REDACTED_RNTIER_PATH/.local/bin/lm_eval
+export PYTHONPATH="${HOME}/.local/lib/python3.12/site-packages:${PYTHONPATH}"
+export LM_EVAL_BIN="${HOME}/.local/bin/lm_eval"
 
 # Verify installation
 python -c "import lm_eval; print('✓ lm_eval', lm_eval.__version__)" || { echo "✗ lm_eval import failed"; exit 1; }

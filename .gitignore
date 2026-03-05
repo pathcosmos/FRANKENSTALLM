@@ -27,6 +27,10 @@ runs/
 nohup.out
 *.tmp
 
+# ===== 환경변수/시크릿 =====
+.env
+.env.*
+
 # ===== OS/IDE =====
 .DS_Store
 .vscode/
