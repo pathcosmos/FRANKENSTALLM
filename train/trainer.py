@@ -148,7 +148,7 @@ class Trainer:
         self._val_loader = val_loader
         self._best_val_loss: float = float("inf")
         self._val_patience_counter: int = 0
-        self._val_patience_limit: int = 5  # early stopping patience
+        self._val_patience_limit: int = 10  # early stopping patience (v2: 5→10, warmup 후 충분한 학습 보장)
 
         # Graceful shutdown support — signal handler에서 flag 설정,
         # 학습 루프가 각 step 완료 후 확인하여 비상 체크포인트 저장 후 종료
@@ -364,6 +364,9 @@ class Trainer:
             # ---- Validation ------------------------------------------------
             if (step + 1) % cfg.eval_interval == 0 and self._val_loader is not None:
                 val_loss = self._run_validation()
+                # Determine early stopping on rank 0, broadcast to all ranks
+                # so every DDP rank exits together (prevents hang).
+                should_stop = False
                 if self._is_main:
                     self._log(f"step {step + 1:>7d} | val_loss {val_loss:.4f}")
                     if self._writer is not None:
@@ -396,7 +399,17 @@ class Trainer:
                                 f"Early stopping triggered at step {step + 1} "
                                 f"(patience {self._val_patience_limit} exhausted)"
                             )
-                            return
+                            should_stop = True
+                # Broadcast early stopping decision to all DDP ranks.
+                if torch.distributed.is_initialized():
+                    stop_tensor = torch.tensor(
+                        [1 if should_stop else 0], dtype=torch.int32,
+                        device=self.device,
+                    )
+                    torch.distributed.broadcast(stop_tensor, src=0)
+                    should_stop = stop_tensor.item() == 1
+                if should_stop:
+                    return
 
             # ---- Checkpoint save -------------------------------------------
             if (step + 1) % cfg.save_interval == 0 and self._is_main:

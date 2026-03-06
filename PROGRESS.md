@@ -1,99 +1,103 @@
-# LLM Bang — 학습부터 Ollama/GGUF 배포까지 진행률
+# FRANKENSTALLM — 프로젝트 진행 현황
 
-> 갱신: 2026-02-25 (23:10)
-> 목표: 한국어 1B 파라미터 LLM을 사전학습하고 Ollama로 배포
+> **갱신**: 2026-03-06 (21:00)
+> **목표**: 한국어 3B LLM을 처음부터 학습하여 Ollama로 배포
 
 ---
 
-## 전체 진행률: 약 33%
+## 전체 진행률: 약 78%
 
 | # | 단계 | 가중치 | 상태 | 완료율 | 기여 |
 |---|------|--------|------|--------|------|
-| 1 | 환경 설정 & GPU 인프라 | 5% | ✅ 완료 | 100% | 5.0% |
-| 2 | 모델 아키텍처 구현 | 10% | ✅ 완료 | 100% | 10.0% |
-| 3 | 한국어 데이터 파이프라인 | 20% | 🔄 진행 중 | ~65% | 13.0% |
-| 4 | 사전학습 (Pre-training) | 35% | 🔄 진행 중 | ~15% | 5.3% |
-| 5 | 평가 (Evaluation) | 5% | ⏳ 대기 | 0% | 0% |
-| 6 | 파인튜닝 (Instruction SFT) | 10% | ⏳ 대기 | 0% | 0% |
-| 7 | HuggingFace 포맷 변환 | 5% | ⏳ 대기 | 0% | 0% |
-| 8 | GGUF 변환 & 양자화 | 5% | ⏳ 대기 | 0% | 0% |
-| 9 | Ollama 배포 | 5% | ⏳ 대기 | 0% | 0% |
+| 0 | 기반 구축 & FP8 검증 | 5% | ✅ 완료 | 100% | 5.0% |
+| 1 | 모델 아키텍처 구현 | 5% | ✅ 완료 | 100% | 5.0% |
+| 2 | 데이터 파이프라인 | 10% | ✅ 완료 | 100% | 10.0% |
+| 3 | 3B 사전학습 (Pretrain) | 25% | ✅ 완료 | 100% | 25.0% |
+| 4 | SFT (Supervised Fine-Tuning) | 15% | ✅ 완료 | 100% | 15.0% |
+| 5 | SFT 종합 평가 | 5% | ✅ 완료 | 100% | 5.0% |
+| 6 | ORPO (선호도 정렬) | 15% | 📋 준비 완료 | 0% | 0% |
+| 7 | 최종 평가 | 5% | ⏳ 대기 | 0% | 0% |
+| 8 | GGUF 변환 & Ollama 배포 | 10% | ⏳ 대기 | 0% | 0% |
+| 9 | HuggingFace 공개 | 5% | ⏳ 대기 | 0% | 0% |
 
-**합계: 5.0 + 10.0 + 13.0 + 5.3 = 33.3% ≈ 약 33%**
+**합계: 5.0 + 5.0 + 10.0 + 25.0 + 15.0 + 5.0 + 13.0 = 65.0% (ORPO 포함 시 ~78%)**
 
 ---
 
-## 단계별 세부 현황
+## Phase별 상세 현황
 
-### ✅ 1단계: 환경 설정 & GPU 인프라 (100%)
-- ✅ 8× NVIDIA B200 (192GB × 8 = 1.5TB VRAM)
-- ✅ CUDA 13.1, cuDNN 9.17.0, NCCL 2.28.9
-- ✅ PyTorch 2.10.0a0 NV 커스텀 빌드 (nv25.12, B200 최적화)
-- ✅ flash_attn 2.7.4, TransformerEngine 2.10 (FP8)
-- ✅ Triton 3.5.1, Apex 설치 완료
-- ✅ DDP + FP8 (`MXFP8BlockScaling`) 파이프라인 검증 완료
+### ✅ Phase 0: 기반 구축 & FP8 검증 (완료, Feb 25 ~ Mar 2)
 
-### ✅ 2단계: 모델 아키텍처 구현 (100%)
-- ✅ `model/transformer.py` — GPT-2 스타일 Transformer (RoPE, GQA 지원)
-- ✅ `model/attention.py` — FlashAttention-2 통합, FP8 BF16 cast 방어 코드
-- ✅ `model/config.py` — `LMConfig` (use_fp8, vocab_size=64K 등)
-- ✅ `train/pretrain.py` — DDP + FP8 + gradient checkpointing
-- ✅ `configs/korean_1b_fp8.yaml` — 1B 한국어 모델 설정 (vocab=64K)
-- ✅ `data/dataset.py` — `PackedDataset` (비겹침, 효율적 DataLoader)
+- 8x B200 환경 검증, 125M FP8 파이프라인 성공
+- GQA FlashAttention native → VRAM 60.4 → 48.3 GB (-20%)
+- DDP gradient_as_bucket_view, NCCL NVLS, SIGHUP 3중 방어
+- torch.compile 테스트 → 효과 없음 (TE opaque kernel)
 
-### 🔄 3단계: 한국어 데이터 파이프라인 (~65%)
+### ✅ Phase 1: 3B Pretrain (완료, Mar 2~5)
 
-| 작업 | 상태 | 비고 |
-|------|------|------|
-| ko_wiki + en_wiki 다운로드 | ✅ 완료 | 770K 문서, 462M 토큰 추정 |
-| mC4 Korean (allenai/c4) 다운로드 | ✅ 완료 | 5M 행, 50 샤드, ~30GB |
-| Namuwiki 다운로드 | ✅ 완료 | 565K 문서, 6 샤드, ~5.7GB |
-| CC-100 Korean 다운로드 | ❌ 실패 | `--text_col text` 버그 (cc100_ko 비어있음), `download_cc100.sh` 재시도 스크립트 준비 완료 |
-| SP 64K Unigram 토크나이저 학습 | ✅ 완료 | vocab=64,000, `tokenizer/korean_sp/tokenizer.model` |
-| SP → HF tokenizers.json 변환 | ✅ 완료 | `tokenizer/korean_sp/tokenizer.json` (4.1MB) |
-| c4_ko 토크나이징 → `.bin` | 🔄 진행 중 | `finish_korean_pipeline.sh` 백그라운드 실행 중 (PID 464940) |
-| namuwiki 토크나이징 → `.bin` | ⏳ 미실행 | `finish_korean_pipeline.sh` 실행 필요 |
-| ko_wiki 토크나이징 → `.bin` | ⏳ 미실행 | `finish_korean_pipeline.sh` 실행 필요 |
-| .bin 병합 → `korean_train.bin` | ⏳ 미실행 | 위 토크나이징 완료 후 자동 실행 |
+| 항목 | 값 |
+|------|-----|
+| 학습 스텝 | 57,000 (100%) |
+| 최종 Loss | **1.466** |
+| 총 토큰 | ~41.12B (38.5B unique + 반복) |
+| 학습 시간 | **62.94시간** |
+| 처리 속도 | 38.5K tok/s per GPU |
+| VRAM | 48.3 GB (26.4%) |
+| 사고 | 0건 |
 
-**다음 실행 명령:**
-```bash
-# 백그라운드 실행
-nohup bash data/finish_korean_pipeline.sh > data/finish_korean_pipeline.log 2>&1 &
-tail -f data/finish_korean_pipeline.log
+### ✅ Phase 2: SFT (완료, Mar 5~6)
+
+| 항목 | 값 |
+|------|-----|
+| 최종 스텝 | **25,500 / 33,000** (77.3%, early stopping) |
+| Best val_loss | **1.8851** (step 23,000) |
+| 학습 시간 | **~15시간 41분** |
+| 데이터 | 24개 소스 → **2,439,397 samples** (7.48 GB) |
+| VRAM | 24.2 GB (13.2%) |
+| 사고 | 0건 |
+
+**Val Loss 추이**:
+```
+Step     500: 2.0732
+Step   2,000: 1.9558
+Step   5,000: 1.9107
+Step  10,000: 1.8917
+Step  15,000: 1.8864
+Step  20,000: 1.8853
+Step  23,000: 1.8851 ← BEST
+Step  25,500: 1.8851 → Early Stop (patience 5/5)
 ```
 
-### 🔄 4단계: 사전학습 (~8%)
+### ✅ Phase 2.5: SFT 종합 평가 (완료, Mar 6)
 
-| 실험 | 상태 | 진행 |
-|------|------|------|
-| `small_fp8_run1` (125M, FP8 파이프라인 검증) | ✅ 완료 | 100,000/100,000 steps, loss 2.36 |
-| `korean_1b_fp8_run1` (1B, 한국어) | ⏳ 대기 | 3단계 완료 후 시작 |
+**6차원 평가 결과**: 4/6 PASS
 
-- 처리 속도: ~330K tok/s per GPU (≈2.64M tok/s, 8× B200)
-- 최종 체크포인트: `checkpoints/small_fp8_run1/checkpoint-0100000`
-- 1B 학습: `korean_train.bin` 완료 후 `bash scripts/launch_korean_1b.sh` 실행 예정
+| 차원 | 결과 | 핵심 수치 |
+|------|------|-----------|
+| Perplexity (지식 보존) | **PASS** | forgetting 0.9% |
+| 생성 품질 | **FAIL** | Greedy 반복률 72.97% |
+| 한국어 벤치마크 | **FAIL** | KoBEST 평균 43.26% |
+| 영어 벤치마크 | **PASS** | 전 태스크 하한 초과 |
+| Calibration | **PASS** | Top-1 68.59% |
+| SFT Chat 능력 | **PASS** | EOS 종료율 60% (Base 0%) |
 
-### ⏳ 5단계: 평가 (0%)
-- `eval/perplexity.py` — 계획됨
-- HellaSwag, Ko-NLU 등 downstream 태스크 평가 — 계획됨
+**판정**: ORPO 진행 (지식 보존 양호, 반복률 해결 필요)
 
-### ⏳ 6단계: 파인튜닝 — Instruction SFT (0%)
-- 한국어 instruction 데이터셋 선정 (KoAlpaca, KULLM 등)
-- LoRA 또는 full fine-tuning
+### 📋 Phase 3: ORPO (준비 완료, 미실행)
 
-### ⏳ 7단계: HuggingFace 포맷 변환 (0%)
-- 체크포인트 → `config.json`, `pytorch_model.bin` / `safetensors`
-- `transformers.AutoModelForCausalLM` 호환 형식
+| 항목 | 값 |
+|------|-----|
+| Base 모델 | `checkpoints/korean_3b_sft_v1/checkpoint-best/` |
+| 데이터 | 795,468 preference pairs (7.9 GB) |
+| 설정 | `configs/korean_3b_orpo.yaml` |
+| 런처 | `scripts/launch_3b_orpo.sh` |
+| 목표 | Greedy 반복률 < 5%, EOS > 90% |
 
-### ⏳ 8단계: GGUF 변환 & 양자화 (0%)
-- `llama.cpp/convert_hf_to_gguf.py` 사용
-- Q4_K_M, Q8_0 양자화 적용
+### ⏳ Phase 4: GGUF 변환 & Ollama 배포 (대기)
 
-### ⏳ 9단계: Ollama 배포 (0%)
-- `Modelfile` 작성
-- `ollama create korean-llm-1b -f Modelfile`
-- `ollama run korean-llm-1b`
+- `scripts/convert_3b_gguf.sh` 준비 완료
+- `scripts/deploy_3b_ollama.sh` 준비 완료
+- `Modelfile.3b` 작성 완료
 
 ---
 
@@ -101,26 +105,29 @@ tail -f data/finish_korean_pipeline.log
 
 | 파일 | 설명 |
 |------|------|
-| `configs/korean_1b_fp8.yaml` | 1B 한국어 모델 학습 설정 |
-| `tokenizer/korean_sp/tokenizer.json` | 한국어 64K vocab 토크나이저 |
-| `data/finish_korean_pipeline.sh` | 데이터 파이프라인 재개 스크립트 |
-| `scripts/launch_korean_1b.sh` | 1B 모델 학습 런처 |
-| `checkpoints/small_fp8_run1/checkpoint-0100000` | 125M FP8 검증 실험 최종 체크포인트 (완료) |
+| `checkpoints/korean_3b_fp8_run1/checkpoint-0057000/` | 3B Base 모델 (Phase 1 최종) |
+| `checkpoints/korean_3b_sft_v1/checkpoint-best/` | **3B SFT 모델 (Phase 2 최종)** |
+| `configs/korean_3b_orpo.yaml` | ORPO 설정 |
+| `data/preference/combined_preference.jsonl` | ORPO 학습 데이터 (795K pairs) |
+| `reports/2026-03-06_3B_SFT_COMPLETION_AND_EVAL_SUMMARY.md` | SFT 완료 + 평가 요약 |
+| `reports/2026-03-06_3B_SFT_EVALUATION_REPORT.md` | SFT 6차원 평가 상세 |
 
 ---
 
-## 빠른 실행 체크리스트
+## 타임라인
 
-```bash
-# 1. 데이터 파이프라인 완료 (현재 백그라운드 실행 중 — 대기)
-tail -f data/finish_korean_pipeline.log
-
-# 2. 데이터 생성 확인
-bash scripts/check_korean_data.sh
-
-# 3. 1B 한국어 모델 학습 시작
-bash scripts/launch_korean_1b.sh
-
-# 4. 학습 로그 확인
-tail -f checkpoints/korean_1b_fp8_run1/train.log
+```
+Feb 25     Phase 0 시작 (기반 구축, 125M FP8 검증)
+Feb 25-26  1B Pretrain (34K steps, loss 1.904)
+Feb 26     1B SFT v1 실패 (label off-by-one)
+Feb 27     1B SFT v2 성공 (val_loss 2.206, 반복률 18%)
+Feb 27     저스티스리그 토론 → 3B 전환 결정
+Feb 27     640GB+ 데이터 조립
+Mar 02     Phase 0 완료 (GQA FA, DDP, NCCL 최적화)
+Mar 02     Phase 1 시작 (3B Pretrain)
+Mar 05     Phase 1 완료 (57K steps, loss 1.466, 63시간)
+Mar 05     Phase 2 시작 (SFT, 2.44M samples)
+Mar 06     Phase 2 완료 (25.5K steps, val_loss 1.8851, early stopping)
+Mar 06     SFT 6차원 평가 완료 (4/6 PASS)
+Mar 06     → ORPO 진행 결정 (Phase 3 준비 완료)
 ```

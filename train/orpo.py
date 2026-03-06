@@ -71,22 +71,40 @@ def load_custom_jsonl(path: str) -> Dataset:
     return Dataset.from_list(data)
 
 
+def load_yaml_config(path: str) -> dict:
+    """Load YAML config and return as dict."""
+    import yaml
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
 def main():
     parser = argparse.ArgumentParser(description="ORPO Training")
-    parser.add_argument("--model_path", type=str, required=True, help="HF format model path")
+    parser.add_argument("--config", type=str, default=None, help="YAML config file path")
+    parser.add_argument("--model_path", type=str, default=None, help="HF format model path")
     parser.add_argument("--dataset", type=str, default="kuotient/orca-math-korean-dpo-pairs")
     parser.add_argument("--custom_data_path", type=str, default=None, help="Custom JSONL preference data")
-    parser.add_argument("--output_dir", type=str, default="outputs/orpo_1b")
+    parser.add_argument("--output_dir", type=str, default="checkpoints/korean_3b_orpo")
     parser.add_argument("--hf_token", type=str, default=None)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=5e-6)
     parser.add_argument("--beta", type=float, default=0.1, help="ORPO beta (odds ratio weight)")
-    parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
-    parser.add_argument("--max_length", type=int, default=1024)
-    parser.add_argument("--max_prompt_length", type=int, default=512)
+    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=8)
+    parser.add_argument("--max_length", type=int, default=2048)
+    parser.add_argument("--max_prompt_length", type=int, default=1024)
     parser.add_argument("--bf16", action="store_true", default=True)
     args = parser.parse_args()
+
+    # Override CLI defaults with YAML config values
+    if args.config:
+        cfg = load_yaml_config(args.config)
+        for key, value in cfg.items():
+            if hasattr(args, key):
+                setattr(args, key, value)
+
+    if not args.model_path:
+        parser.error("--model_path is required (or set model_path in YAML config)")
 
     # Load model
     print(f"Loading model from {args.model_path}...")

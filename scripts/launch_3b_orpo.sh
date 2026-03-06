@@ -21,9 +21,9 @@ set -euo pipefail
 
 # ---- Configurable defaults --------------------------------------------------
 RUN_NAME="${RUN_NAME:-korean_3b_orpo_v1}"
-BASE_MODEL="${BASE_MODEL:-outputs/hf_korean_3b_sft}"
+BASE_MODEL="${BASE_MODEL:-eval/outputs/hf_3b_sft_v2_best}"
 DATA_PATH="${DATA_PATH:-data/preference/combined_preference.jsonl}"
-OUTPUT_DIR="outputs/${RUN_NAME}"
+OUTPUT_DIR="checkpoints/${RUN_NAME}"
 CKPT_DIR="checkpoints/${RUN_NAME}"
 LOG_FILE="${CKPT_DIR}/train.log"
 NPROC=8
@@ -31,10 +31,10 @@ MASTER_PORT="${MASTER_PORT:-29502}"
 
 # ORPO 하이퍼파라미터
 BATCH_SIZE=2
-GRAD_ACCUM=4
-LR=5e-7
+GRAD_ACCUM=8
+LR=5e-6
 BETA=0.1
-EPOCHS=1
+EPOCHS=3
 MAX_LENGTH=2048
 MAX_PROMPT_LENGTH=1024
 WARMUP_RATIO=0.05

@@ -1,0 +1,48 @@
+# Korean 3B ORPO Configuration
+#
+# Base model: SFT v2 best checkpoint (HF format으로 변환 후 사용)
+# 목표: Greedy 반복률 73%→15% 이하, EOS 종료율 0%→90%+
+#
+# 실행:
+#   1) HF 변환: python scripts/convert_to_hf.py --checkpoint checkpoints/korean_3b_sft_v2/checkpoint-best --output eval/outputs/hf_3b_sft_v2_best
+#   2) Preference 데이터 준비: python data/prepare_preference_combined.py
+#   3) ORPO 학습:
+#      python train/orpo.py \
+#        --model_path eval/outputs/hf_3b_sft_v2_best \
+#        --custom_data_path data/preference/combined_preference.jsonl \
+#        --output_dir checkpoints/korean_3b_orpo \
+#        --config configs/korean_3b_orpo.yaml
+#
+# [설계 근거]
+#   - beta=0.1: ORPO 논문 권장값, odds ratio loss 가중치
+#   - lr=5e-6: SFT lr(5e-5)의 1/10 — preference 학습은 미세 조정이므로 보수적
+#   - epochs=3: 한국어 preference 데이터 규모(~수십만) 기준 적정
+#   - max_length=2048: 3B 모델 + 8GPU VRAM 여유 충분 (chosen+rejected 포함)
+
+# ORPO training hyperparameters
+model_path: eval/outputs/hf_3b_sft_v2_best
+output_dir: checkpoints/korean_3b_orpo
+
+# Training
+epochs: 3
+lr: 5.0e-6
+beta: 0.1
+batch_size: 2
+gradient_accumulation_steps: 8
+max_length: 2048
+max_prompt_length: 1024
+bf16: true
+
+# Scheduler
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+
+# Logging & checkpointing
+logging_steps: 10
+save_steps: 500
+save_total_limit: 3
+gradient_checkpointing: true
+report_to: tensorboard
+
+# Data
+custom_data_path: data/preference/combined_preference.jsonl

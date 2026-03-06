@@ -10,6 +10,8 @@ import sys
 import time
 from pathlib import Path
 
+import os
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -19,8 +21,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-CHECKPOINT = str(_PROJECT_ROOT / "checkpoints" / "korean_3b_fp8_run1" / "checkpoint-0057000")
-TOKENIZER_PATH = str(_PROJECT_ROOT / "tokenizer" / "korean_sp" / "tokenizer.json")
+_DEFAULT_CHECKPOINT = str(_PROJECT_ROOT / "checkpoints" / "korean_3b_fp8_run1" / "checkpoint-0057000")
+CHECKPOINT = os.environ.get("EVAL_CHECKPOINT", _DEFAULT_CHECKPOINT)
+TOKENIZER_PATH = os.environ.get("EVAL_TOKENIZER", str(_PROJECT_ROOT / "tokenizer" / "korean_sp" / "tokenizer.json"))
 DATA_DIR = _PROJECT_ROOT / "data"
 SEQ_LEN = 2048
 STRIDE = 512
@@ -115,7 +118,11 @@ def eval_token_nll(device: str, n_tokens: int = 50000) -> dict:
     model = _load_model(device)
 
     val_path = DATA_DIR / "3b_val.bin"
+    if not val_path.exists():
+        raise FileNotFoundError(f"Validation file not found: {val_path}")
     tokens = np.fromfile(str(val_path), dtype=np.uint16)
+    if len(tokens) == 0:
+        raise ValueError(f"Validation file is empty (0 tokens): {val_path}")
     tokens = tokens[: min(n_tokens, len(tokens))]
     print(f"[NLL {device}] Using {len(tokens):,} tokens from 3b_val.bin")
 

@@ -1,0 +1,54 @@
+# Korean 3B SFT v2 Configuration
+#
+# Base model: checkpoints/korean_3b_fp8_run1/checkpoint-0057000 (3B params pretrained)
+# SFT v2 목표: v1의 underfitting 해결 + forgetting 방지 (data mixing)
+# 아키텍처: LLaMA-3 3B 참고 (d=3072, 28L, 24H, GQA 8:1)
+#
+# 실행: bash scripts/launch_3b_sft_v2.sh
+#
+# [설계 근거 — SFT v1 실패 분석 2026-03-06]
+#   v1 문제: lr=1e-5 → val_loss 변화 0 (사실상 학습 안 됨)
+#   v2 변경:
+#     - lr: 1e-5 → 5e-5 (5배 ↑, 3B SFT 표준 범위)
+#     - batch: 4 × 8GPU × 8 grad_accum = 256 eff_batch (v1 대비 4배 ↑)
+#     - warmup: 500 → 2000 (높은 LR에 맞춰 안정화)
+#     - max_steps: 33000 → 15000 (수렴 빨라짐, 과적합 방지)
+#     - weight_decay: 0.01 → 0.05 (forgetting 억제)
+#     - data mixing: SFT 70% + pretrain 30% (forgetting 방지)
+
+model:
+  vocab_size: 64000
+  d_model: 3072
+  n_layers: 28
+  n_heads: 24
+  n_kv_heads: 8
+  d_ffn: 8192
+  max_seq_len: 4096
+  rope_theta: 500000.0
+  dropout: 0.0
+  bias: false
+  use_flash_attn: true
+  use_fp8: true
+
+train:
+  max_steps: 15000       # v1 33000 → 15000 (수렴 빨라짐)
+  batch_size: 4          # v1 2 → 4 (VRAM 여유 충분: 48/183GB)
+  grad_accum_steps: 8    # v1 4 → 8 (eff_batch: 4 × 8GPU × 8 = 256)
+  lr: 5.0e-5             # v1 1e-5 → 5e-5 (5배 ↑, underfitting 해결)
+  weight_decay: 0.05     # v1 0.01 → 0.05 (forgetting 억제)
+  warmup_steps: 2000     # v1 500 → 2000 (높은 LR 안정화)
+  max_grad_norm: 1.0     # gradient clipping
+  log_interval: 10
+  save_interval: 2000
+  eval_interval: 500
+  use_amp: false
+  compile_model: false
+  neftune_alpha: 5.0     # NEFTune noise injection (유지)
+
+  # Data mixing (forgetting 방지)
+  pretrain_mix_ratio: 0.3        # pretrain 데이터 30% 혼합
+  pretrain_data: data/3b_train.bin  # pretrain 데이터 경로
+
+tokenizer:
+  vocab_size: 64000
+  type: sentencepiece_unigram

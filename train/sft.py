@@ -39,6 +39,81 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, DistributedSampler, RandomSampler
 
+# ---------------------------------------------------------------------------
+# Data Mixing: Interleave SFT + Pretrain batches for forgetting prevention
+# ---------------------------------------------------------------------------
+
+
+class MixingDataLoader:
+    """
+    Wraps two DataLoaders and yields batches from one or the other
+    based on a probability ratio.
+
+    With ``pretrain_ratio=0.3``, 30% of batches come from the pretrain
+    loader and 70% from the SFT loader.  Both loaders cycle infinitely.
+
+    This is duck-type compatible with DataLoader for the Trainer's needs:
+    - ``__iter__`` yields batches
+    - ``__len__`` returns the SFT loader length (used for epoch estimation)
+    """
+
+    def __init__(
+        self,
+        sft_loader: DataLoader,
+        pretrain_loader: DataLoader,
+        pretrain_ratio: float = 0.3,
+        sft_sampler: DistributedSampler | RandomSampler | None = None,
+        pretrain_sampler: DistributedSampler | RandomSampler | None = None,
+    ) -> None:
+        self.sft_loader = sft_loader
+        self.pretrain_loader = pretrain_loader
+        self.pretrain_ratio = pretrain_ratio
+        self.sft_sampler = sft_sampler
+        self.pretrain_sampler = pretrain_sampler
+        self._epoch = 0
+
+    def __len__(self) -> int:
+        return len(self.sft_loader)
+
+    def __iter__(self):
+        sft_iter = iter(self.sft_loader)
+        pt_iter = iter(self.pretrain_loader)
+
+        while True:
+            use_pretrain = random.random() < self.pretrain_ratio
+            try:
+                if use_pretrain:
+                    batch = next(pt_iter)
+                else:
+                    batch = next(sft_iter)
+            except StopIteration:
+                # Whichever exhausted, restart it
+                if use_pretrain:
+                    self._epoch += 1
+                    if self.pretrain_sampler is not None and hasattr(self.pretrain_sampler, 'set_epoch'):
+                        self.pretrain_sampler.set_epoch(self._epoch)
+                    pt_iter = iter(self.pretrain_loader)
+                    try:
+                        batch = next(pt_iter)
+                    except StopIteration:
+                        raise RuntimeError(
+                            "Pretrain DataLoader is empty after restart. "
+                            "Check pretrain_data path and drop_last settings."
+                        )
+                else:
+                    self._epoch += 1
+                    if self.sft_sampler is not None and hasattr(self.sft_sampler, 'set_epoch'):
+                        self.sft_sampler.set_epoch(self._epoch)
+                    sft_iter = iter(self.sft_loader)
+                    try:
+                        batch = next(sft_iter)
+                    except StopIteration:
+                        raise RuntimeError(
+                            "SFT DataLoader is empty after restart. "
+                            "Check sft_data path and drop_last settings."
+                        )
+            yield batch
+
 # B200 Tensor Core 최대 활용: TF32 matmul + cuDNN
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -212,6 +287,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save_interval", type=int, default=500, help="Checkpoint save interval (steps).")
     parser.add_argument("--eval_interval", type=int, default=250, help="Validation eval interval (steps).")
     parser.add_argument("--neftune_alpha", type=float, default=5.0, help="NEFTune noise magnitude (0 to disable).")
+    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Maximum gradient L2 norm for clipping.")
+
+    # --- Data mixing (forgetting prevention) --------------------------------
+    parser.add_argument(
+        "--pretrain_data",
+        type=Path,
+        default=None,
+        help="Path to pretrain .bin file for data mixing. Enables SFT+pretrain interleaving.",
+    )
+    parser.add_argument(
+        "--pretrain_mix_ratio",
+        type=float,
+        default=0.3,
+        help="Fraction of batches from pretrain data (0.3 = 30%% pretrain, 70%% SFT).",
+    )
 
     # First pass: just get --config
     args, remaining = parser.parse_known_args()
@@ -234,7 +324,12 @@ def parse_args() -> argparse.Namespace:
             "save_interval": "save_interval",
             "eval_interval": "eval_interval",
             "neftune_alpha": "neftune_alpha",
+            "pretrain_mix_ratio": "pretrain_mix_ratio",
+            "max_grad_norm": "max_grad_norm",
         }
+        # pretrain_data is a Path, handle separately
+        if "pretrain_data" in train_section:
+            parser.set_defaults(pretrain_data=Path(train_section["pretrain_data"]))
         new_defaults = {}
         for yaml_key, arg_name in yaml_to_arg.items():
             if yaml_key in train_section:
@@ -598,13 +693,43 @@ def main() -> None:
     # ignore_index=-1, so only response tokens contribute to the gradient.
     from data.sft_dataset import SFTDataset  # type: ignore[import]
 
-    train_dataset = SFTDataset(
-        data_path=args.sft_data,
-        tokenizer=tokenizer,
-        max_seq_len=model.config.max_seq_len
+    max_seq_len_cfg = (
+        model.config.max_seq_len
         if not isinstance(model, torch.nn.parallel.DistributedDataParallel)
-        else model.module.config.max_seq_len,
+        else model.module.config.max_seq_len
     )
+
+    # DDP optimization: rank 0 does tokenization + cache, other ranks load cache.
+    # This avoids 8× redundant work and 8× memory usage.
+    # Rank 0 gets all 64 CPU cores for parallel tokenization (reserve 8 for system)
+    tok_workers = 64 if is_main_process() else 0
+    if is_ddp:
+        if is_main_process():
+            # Rank 0: full tokenization with parallel workers + save cache
+            train_dataset = SFTDataset(
+                data_path=args.sft_data,
+                tokenizer=tokenizer,
+                max_seq_len=max_seq_len_cfg,
+                tokenizer_path=tokenizer_path,
+                num_workers=tok_workers,
+            )
+        # Barrier: wait for rank 0 to finish tokenization and save cache
+        torch.distributed.barrier()
+        if not is_main_process():
+            # Other ranks: load from cache (rank 0 already saved it)
+            train_dataset = SFTDataset(
+                data_path=args.sft_data,
+                tokenizer=tokenizer,
+                max_seq_len=max_seq_len_cfg,
+            )
+    else:
+        train_dataset = SFTDataset(
+            data_path=args.sft_data,
+            tokenizer=tokenizer,
+            max_seq_len=max_seq_len_cfg,
+            tokenizer_path=tokenizer_path,
+            num_workers=tok_workers,
+        )
 
     if is_ddp:
         train_sampler: DistributedSampler | RandomSampler = DistributedSampler(
@@ -633,6 +758,65 @@ def main() -> None:
         collate_fn=dynamic_collate_fn,
     )
 
+    # ---- Pretrain Data Mixing (forgetting prevention) -----------------------
+    # When --pretrain_data is specified, create a second DataLoader for pretrain
+    # data and wrap both in MixingDataLoader.  This interleaves SFT and pretrain
+    # batches (default 70/30 ratio) so the model retains pretrained knowledge.
+    pretrain_sampler = None
+    if args.pretrain_data is not None:
+        if not args.pretrain_data.exists():
+            raise FileNotFoundError(f"Pretrain data not found: {args.pretrain_data}")
+
+        from data import PackedDataset
+
+        max_seq_len = (
+            model.config.max_seq_len
+            if not isinstance(model, torch.nn.parallel.DistributedDataParallel)
+            else model.module.config.max_seq_len
+        )
+        pretrain_dataset = PackedDataset(args.pretrain_data, seq_len=max_seq_len)
+
+        if is_ddp:
+            pretrain_sampler = DistributedSampler(
+                pretrain_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=True,
+                seed=args.seed + 1000,  # different seed from SFT
+            )
+        else:
+            pretrain_sampler = RandomSampler(pretrain_dataset)
+
+        pretrain_loader = DataLoader(
+            pretrain_dataset,
+            batch_size=args.batch_size,
+            sampler=pretrain_sampler,
+            num_workers=4,
+            pin_memory=True,
+            drop_last=True,
+            prefetch_factor=2,
+            persistent_workers=True,
+        )
+
+        # Wrap both loaders in MixingDataLoader
+        effective_loader = MixingDataLoader(
+            sft_loader=train_loader,
+            pretrain_loader=pretrain_loader,
+            pretrain_ratio=args.pretrain_mix_ratio,
+            sft_sampler=train_sampler if is_ddp else None,
+            pretrain_sampler=pretrain_sampler if is_ddp else None,
+        )
+
+        if is_main_process():
+            print(
+                f"[INFO] Data mixing enabled: "
+                f"{(1 - args.pretrain_mix_ratio) * 100:.0f}% SFT + "
+                f"{args.pretrain_mix_ratio * 100:.0f}% pretrain"
+            )
+            print(f"[INFO] Pretrain data: {args.pretrain_data} ({len(pretrain_dataset):,} samples)")
+    else:
+        effective_loader = train_loader
+
     # Optional validation loader.
     # NOTE: The current Trainer implementation does not yet accept a val_loader
     # argument; the eval_interval config field is reserved for future use.
@@ -642,11 +826,30 @@ def main() -> None:
     if args.val_data is not None:
         if not args.val_data.exists():
             raise FileNotFoundError(f"Validation data not found: {args.val_data}")
-        val_dataset = SFTDataset(
-            data_path=args.val_data,
-            tokenizer=tokenizer,
-            max_seq_len=train_dataset.max_seq_len,
-        )
+        if is_ddp:
+            if is_main_process():
+                val_dataset = SFTDataset(
+                    data_path=args.val_data,
+                    tokenizer=tokenizer,
+                    max_seq_len=train_dataset.max_seq_len,
+                    tokenizer_path=tokenizer_path,
+                    num_workers=tok_workers,
+                )
+            torch.distributed.barrier()
+            if not is_main_process():
+                val_dataset = SFTDataset(
+                    data_path=args.val_data,
+                    tokenizer=tokenizer,
+                    max_seq_len=train_dataset.max_seq_len,
+                )
+        else:
+            val_dataset = SFTDataset(
+                data_path=args.val_data,
+                tokenizer=tokenizer,
+                max_seq_len=train_dataset.max_seq_len,
+                tokenizer_path=tokenizer_path,
+                num_workers=tok_workers,
+            )
         val_loader = DataLoader(
             val_dataset,
             batch_size=args.batch_size,
@@ -686,6 +889,7 @@ def main() -> None:
         save_interval=args.save_interval,
         log_interval=10,
         eval_interval=args.eval_interval,
+        max_grad_norm=args.max_grad_norm,
     )
 
     # ---- LR Scheduler ------------------------------------------------------
@@ -733,15 +937,17 @@ def main() -> None:
             print(f"Tokenizer copied to {dest_tok}")
 
     # ---- Trainer -----------------------------------------------------------
+    # When data mixing is active, pass effective_loader (MixingDataLoader).
+    # MixingDataLoader handles its own epoch cycling, so no external sampler needed.
     trainer = Trainer(
         model=model,
-        train_loader=train_loader,
+        train_loader=effective_loader,
         optimizer=optimizer,
         scheduler=scheduler,
         config=train_config,
         device=device,
         rank=rank,
-        sampler=train_sampler if is_ddp else None,
+        sampler=train_sampler if is_ddp and args.pretrain_data is None else None,
         val_loader=val_loader,
     )
 
@@ -783,6 +989,13 @@ def main() -> None:
         nccl_debug = os.environ.get("NCCL_DEBUG", "not set")
         omp_threads = os.environ.get("OMP_NUM_THREADS", "not set")
 
+        mix_label = "none"
+        if args.pretrain_data is not None:
+            mix_label = (
+                f"{(1 - args.pretrain_mix_ratio) * 100:.0f}% SFT + "
+                f"{args.pretrain_mix_ratio * 100:.0f}% pretrain"
+            )
+
         print(
             f"\n{'='*70}\n"
             f"  LLM Supervised Fine-Tuning — "
@@ -790,6 +1003,7 @@ def main() -> None:
             f"{'='*70}\n"
             f"  base ckpt : {args.base_checkpoint}\n"
             f"  sft data  : {args.sft_data} ({train_samples:,} samples)\n"
+            f"  data mix  : {mix_label}\n"
             f"  model     : {inner_config.num_params:,} params  |  "
             f"d_model={inner_config.d_model}  n_layers={inner_config.n_layers}\n"
             f"  precision : {precision_label}\n"

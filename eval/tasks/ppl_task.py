@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+import os
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -21,8 +23,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-CHECKPOINT = str(_PROJECT_ROOT / "checkpoints" / "korean_3b_fp8_run1" / "checkpoint-0057000")
-TOKENIZER_PATH = str(_PROJECT_ROOT / "tokenizer" / "korean_sp" / "tokenizer.json")
+_DEFAULT_CHECKPOINT = str(_PROJECT_ROOT / "checkpoints" / "korean_3b_fp8_run1" / "checkpoint-0057000")
+CHECKPOINT = os.environ.get("EVAL_CHECKPOINT", _DEFAULT_CHECKPOINT)
+TOKENIZER_PATH = os.environ.get("EVAL_TOKENIZER", str(_PROJECT_ROOT / "tokenizer" / "korean_sp" / "tokenizer.json"))
 DATA_DIR = _PROJECT_ROOT / "data"
 SEQ_LEN = 2048
 STRIDE = 512
@@ -103,6 +106,8 @@ def eval_ppl_single(val_file: str, device: str, model=None) -> dict:
     """
     torch.cuda.set_device(int(device.split(":")[-1]))
     data_path = DATA_DIR / val_file
+    if not data_path.exists():
+        raise FileNotFoundError(f"Validation file not found: {data_path}")
     name = val_file.replace("_val.bin", "").replace(".bin", "")
 
     own_model = model is None
@@ -111,6 +116,8 @@ def eval_ppl_single(val_file: str, device: str, model=None) -> dict:
         model = _load_model(device)
 
     tokens = np.fromfile(str(data_path), dtype=np.uint16)
+    if len(tokens) == 0:
+        raise ValueError(f"Validation file is empty (0 tokens): {data_path}")
     n_tokens = len(tokens)
     print(f"[PPL {device}] {name}: {n_tokens:,} tokens, {n_tokens * 2 / 1e6:.1f} MB")
 

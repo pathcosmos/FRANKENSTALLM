@@ -12,6 +12,8 @@ Helper functions (also top-level, used internally):
 """
 from __future__ import annotations
 
+import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -20,12 +22,19 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+logger = logging.getLogger(__name__)
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-CHECKPOINT = str(_PROJECT_ROOT / "checkpoints" / "korean_3b_fp8_run1" / "checkpoint-0057000")
-TOKENIZER_PATH = str(_PROJECT_ROOT / "tokenizer" / "korean_sp" / "tokenizer.json")
+_DEFAULT_CHECKPOINT = str(_PROJECT_ROOT / "checkpoints" / "korean_3b_fp8_run1" / "checkpoint-0057000")
+CHECKPOINT = os.environ.get("EVAL_CHECKPOINT", _DEFAULT_CHECKPOINT)
+TOKENIZER_PATH = os.environ.get("EVAL_TOKENIZER", str(_PROJECT_ROOT / "tokenizer" / "korean_sp" / "tokenizer.json"))
+
+# Chat template support for SFT models
+USE_CHAT_TEMPLATE = os.environ.get("USE_CHAT_TEMPLATE", "0") == "1"
+CHAT_TEMPLATE_FMT = "<|user|>\n{prompt}\n<|assistant|>\n"
 DATA_DIR = _PROJECT_ROOT / "data"
 SEQ_LEN = 2048
 STRIDE = 512
@@ -217,6 +226,32 @@ def compute_ngram_rep(text: str, n: int) -> float:
     return 1.0 - len(set(ngrams)) / len(ngrams)
 
 
+def compute_diversity_metrics(text: str) -> dict:
+    """N-gram 반복률을 보완하는 어휘 다양성 메트릭.
+
+    - Distinct-n (Li et al., 2016): 고유 n-gram 비율
+    - Type-Token Ratio: 어휘 풍부도
+    """
+    tokens = text.split()
+    n = len(tokens)
+    if n == 0:
+        return {"distinct_1": 0.0, "distinct_2": 0.0, "distinct_3": 0.0,
+                "type_token_ratio": 0.0, "vocab_size": 0, "total_tokens": 0}
+
+    unigrams = set(tokens)
+    bigrams = set(zip(tokens, tokens[1:])) if n > 1 else set()
+    trigrams = set(zip(tokens, tokens[1:], tokens[2:])) if n > 2 else set()
+
+    return {
+        "distinct_1": len(unigrams) / n,
+        "distinct_2": len(bigrams) / max(n - 1, 1),
+        "distinct_3": len(trigrams) / max(n - 2, 1),
+        "type_token_ratio": len(unigrams) / n,
+        "vocab_size": len(unigrams),
+        "total_tokens": n,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main task functions (must be top-level for pickle / spawn compatibility)
 # ---------------------------------------------------------------------------
@@ -246,19 +281,26 @@ def eval_generation(device: str) -> dict:
     total_combinations = len(PROMPTS) * len(TEMPERATURES)
     done = 0
 
+    if USE_CHAT_TEMPLATE:
+        print(f"[GEN {device}] Chat template ENABLED", flush=True)
+
     for prompt in PROMPTS:
+        effective_prompt = CHAT_TEMPLATE_FMT.format(prompt=prompt) if USE_CHAT_TEMPLATE else prompt
         for temp in TEMPERATURES:
             with torch.inference_mode():
                 text, n_tokens, hit_eos = generate_one(
-                    model, tokenizer, prompt, temp, device=device
+                    model, tokenizer, effective_prompt, temp, device=device
                 )
             rep1 = compute_ngram_rep(text, 1)
             rep2 = compute_ngram_rep(text, 2)
             rep3 = compute_ngram_rep(text, 3)
             rep4 = compute_ngram_rep(text, 4)
+            diversity = compute_diversity_metrics(text)
 
             entry = {
                 "prompt": prompt,
+                "chat_template": USE_CHAT_TEMPLATE,
+                "effective_prompt": effective_prompt if USE_CHAT_TEMPLATE else prompt,
                 "temperature": temp,
                 "generated_tokens": n_tokens,
                 "hit_eos": hit_eos,
@@ -266,6 +308,10 @@ def eval_generation(device: str) -> dict:
                 "2gram_rep": round(rep2, 4),
                 "3gram_rep": round(rep3, 4),
                 "4gram_rep": round(rep4, 4),
+                "distinct_1": round(diversity["distinct_1"], 4),
+                "distinct_2": round(diversity["distinct_2"], 4),
+                "distinct_3": round(diversity["distinct_3"], 4),
+                "type_token_ratio": round(diversity["type_token_ratio"], 4),
                 "text": text[:500],  # truncate for readability
             }
             results.append(entry)
@@ -284,6 +330,11 @@ def eval_generation(device: str) -> dict:
     greedy = [r for r in results if r["temperature"] == 0.0]
     sampled = [r for r in results if r["temperature"] > 0.0]
 
+    if not greedy:
+        logger.warning("No greedy generation results — all prompts may have failed")
+    if not sampled:
+        logger.warning("No sampled generation results")
+
     summary = {
         "total_generations": len(results),
         "n_prompts": len(PROMPTS),
@@ -297,6 +348,14 @@ def eval_generation(device: str) -> dict:
         "sampled_avg_3gram_rep": round(np.mean([r["3gram_rep"] for r in sampled]), 4) if sampled else 0.0,
         "sampled_eos_rate": round(np.mean([r["hit_eos"] for r in sampled]), 4) if sampled else 0.0,
         "sampled_avg_tokens": round(np.mean([r["generated_tokens"] for r in sampled]), 1) if sampled else 0.0,
+        "greedy_avg_distinct_1": round(float(np.mean([r["distinct_1"] for r in greedy])), 4) if greedy else 0.0,
+        "greedy_avg_distinct_2": round(float(np.mean([r["distinct_2"] for r in greedy])), 4) if greedy else 0.0,
+        "greedy_avg_distinct_3": round(float(np.mean([r["distinct_3"] for r in greedy])), 4) if greedy else 0.0,
+        "sampled_avg_distinct_2": round(float(np.mean([r["distinct_2"] for r in sampled])), 4) if sampled else 0.0,
+        "token_count_min": int(np.min([r["generated_tokens"] for r in results])) if results else 0,
+        "token_count_max": int(np.max([r["generated_tokens"] for r in results])) if results else 0,
+        "token_count_p25": int(np.percentile([r["generated_tokens"] for r in results], 25)) if results else 0,
+        "token_count_p75": int(np.percentile([r["generated_tokens"] for r in results], 75)) if results else 0,
         "elapsed_sec": round(elapsed, 1),
     }
 
@@ -334,14 +393,18 @@ def eval_repetition_grid(device: str) -> dict:
     total = len(REP_GRID) * len(rep_prompts)
     done = 0
 
+    if USE_CHAT_TEMPLATE:
+        print(f"[REP {device}] Chat template ENABLED", flush=True)
+
     for params in REP_GRID:
         combo_results: list[dict] = []
         for prompt in rep_prompts:
+            effective_prompt = CHAT_TEMPLATE_FMT.format(prompt=prompt) if USE_CHAT_TEMPLATE else prompt
             with torch.inference_mode():
                 text, n_tokens, hit_eos = generate_one(
                     model,
                     tokenizer,
-                    prompt,
+                    effective_prompt,
                     temperature=params["temperature"],
                     repetition_penalty=params["repetition_penalty"],
                     device=device,
@@ -359,6 +422,10 @@ def eval_repetition_grid(device: str) -> dict:
                 }
             )
             done += 1
+
+        if not combo_results:
+            logger.warning("All prompts failed for config %s — skipping", params.get("name", "unknown"))
+            continue
 
         avg_3gram = float(np.mean([r["3gram_rep"] for r in combo_results]))
         avg_4gram = float(np.mean([r["4gram_rep"] for r in combo_results]))
