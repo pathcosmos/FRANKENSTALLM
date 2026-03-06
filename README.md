@@ -45,6 +45,7 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
 13. [로드맵](#13-로드맵)
 14. [참고 문서](#14-참고-문서)
 15. [기술 스택 요약](#15-기술-스택-요약)
+16. [관련 프로젝트](#관련-프로젝트)
 
 ---
 
@@ -1526,6 +1527,29 @@ Phase 0 분석에서 발견했지만 아직 적용하지 않은 최적화들:
 | 추론 서빙 | GGUF + Ollama | - |
 | GPU | 8× NVIDIA B200 (NVLink 5.0, NVSwitch) | CUDA 13.1 |
 | CPU | 2× AMD EPYC 9365 (Zen 5) | - |
+
+---
+
+## 관련 프로젝트
+
+### [EVAFRILL-Mo](https://github.com/pathcosmos/EVAFRILL-Mo)
+
+**하이브리드 Mamba-2 + Transformer 언어 모델** — FRANKENSTALLM의 자매 프로젝트.
+
+NVIDIA [Nemotron-H](https://arxiv.org/abs/2504.03624) 아키텍처에서 영감을 받아 밑바닥부터 직접 구현한 3B 하이브리드 모델이다. FRANKENSTALLM이 순수 Transformer 기반이라면, EVAFRILL-Mo는 **Mamba-2 SSM + 희소 Transformer 어텐션** 하이브리드 구조를 채택했다.
+
+| 항목 | FRANKENSTALLM | EVAFRILL-Mo |
+|------|:---:|:---:|
+| 아키텍처 | 순수 Transformer (28L) | Mamba-2 24L + Attention 2L |
+| 파라미터 | 3.17B | 2.94B |
+| 핵심 기술 | GQA, FP8, FlashAttention-2 | Selective Scan, SwiGLU FFN in Mamba, GQA |
+| 설계 원칙 | 검증된 Transformer 아키텍처 | Nemotron-H 단편화 도입 |
+| GPU | 8× B200 | 7× B200 |
+| 학습 전략 | Chinchilla-optimal | Chinchilla 93% 달성 목표 |
+
+두 프로젝트는 동일한 토크나이저(64K SentencePiece), 학습 데이터 파이프라인, DDP/FP8 인프라를 공유한다. "같은 재료, 다른 레시피"로 아키텍처 차이가 성능에 미치는 영향을 비교 실험할 수 있다.
+
+> *이름의 유래: Bride **Eva** (프랑켄슈타인의 신부) + **FRI**DAY (아이언맨 AI 비서) + **LL**M + Nemotron의 **Mo***
 
 ---
 
