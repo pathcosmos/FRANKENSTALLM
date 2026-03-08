@@ -29,6 +29,64 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# HuggingFace ↔ Custom weight conversion helpers
+# ---------------------------------------------------------------------------
+
+def _load_hf_state_dict(path: Path) -> dict[str, torch.Tensor]:
+    """Load weights from HF safetensors (or pytorch_model.bin fallback)."""
+    safetensors_path = path / "model.safetensors"
+    if safetensors_path.exists():
+        from safetensors.torch import load_file
+        return load_file(str(safetensors_path), device="cpu")
+    bin_path = path / "pytorch_model.bin"
+    if bin_path.exists():
+        return torch.load(bin_path, map_location="cpu", weights_only=True)
+    raise FileNotFoundError(f"No model.safetensors or pytorch_model.bin in {path}")
+
+
+def _convert_hf_to_custom(hf_sd: dict[str, torch.Tensor], config: LMConfig) -> dict[str, torch.Tensor]:
+    """Convert HuggingFace LlamaForCausalLM state dict to our custom format.
+
+    Key mapping:
+      HF: model.embed_tokens.weight       → embedding.weight
+      HF: model.layers.{i}.self_attn.q/k/v_proj.weight → layers.{i}.attn.qkv_proj.weight (fused)
+      HF: model.layers.{i}.self_attn.o_proj.weight     → layers.{i}.attn.out_proj.weight
+      HF: model.layers.{i}.input_layernorm.weight      → layers.{i}.attn_norm.weight
+      HF: model.layers.{i}.mlp.gate_proj.weight        → layers.{i}.ffn.gate_proj.weight
+      HF: model.layers.{i}.mlp.up_proj.weight          → layers.{i}.ffn.up_proj.weight
+      HF: model.layers.{i}.mlp.down_proj.weight        → layers.{i}.ffn.down_proj.weight
+      HF: model.layers.{i}.post_attention_layernorm.weight → layers.{i}.ffn_norm.weight
+      HF: model.norm.weight                → norm.weight
+      HF: lm_head.weight                   → lm_head.weight
+    """
+    sd: dict[str, torch.Tensor] = {}
+
+    sd["embedding.weight"] = hf_sd["model.embed_tokens.weight"]
+    sd["norm.weight"] = hf_sd["model.norm.weight"]
+    sd["lm_head.weight"] = hf_sd["lm_head.weight"]
+
+    for i in range(config.n_layers):
+        pfx = f"model.layers.{i}"
+        out = f"layers.{i}"
+
+        # Fuse Q, K, V into single qkv_proj
+        q = hf_sd[f"{pfx}.self_attn.q_proj.weight"]
+        k = hf_sd[f"{pfx}.self_attn.k_proj.weight"]
+        v = hf_sd[f"{pfx}.self_attn.v_proj.weight"]
+        sd[f"{out}.attn.qkv_proj.weight"] = torch.cat([q, k, v], dim=0)
+
+        sd[f"{out}.attn.out_proj.weight"] = hf_sd[f"{pfx}.self_attn.o_proj.weight"]
+        sd[f"{out}.attn_norm.weight"] = hf_sd[f"{pfx}.input_layernorm.weight"]
+
+        sd[f"{out}.ffn.gate_proj.weight"] = hf_sd[f"{pfx}.mlp.gate_proj.weight"]
+        sd[f"{out}.ffn.up_proj.weight"] = hf_sd[f"{pfx}.mlp.up_proj.weight"]
+        sd[f"{out}.ffn.down_proj.weight"] = hf_sd[f"{pfx}.mlp.down_proj.weight"]
+        sd[f"{out}.ffn_norm.weight"] = hf_sd[f"{pfx}.post_attention_layernorm.weight"]
+
+    return sd
+
+
+# ---------------------------------------------------------------------------
 # Transformer Block
 # ---------------------------------------------------------------------------
 
@@ -264,20 +322,36 @@ class LLM(nn.Module):
     def from_pretrained(cls, path: str | Path) -> "LLM":
         """Load model from a checkpoint directory.
 
-        Expects:
-            <path>/config.yaml  — serialised LMConfig
-            <path>/model.pt     — state dict produced by save_pretrained
+        Supports two formats (auto-detected):
+          1. Custom: config.yaml + model.pt
+          2. HuggingFace: config.json + model.safetensors (LlamaForCausalLM)
         """
         path = Path(path)
-        config = LMConfig.from_yaml(path / "config.yaml")
-        model = cls(config)
-        state_dict = torch.load(
-            path / "model.pt",
-            map_location="cpu",
-            weights_only=True,
+
+        # --- Custom format ---
+        if (path / "config.yaml").exists():
+            config = LMConfig.from_yaml(path / "config.yaml")
+            model = cls(config)
+            state_dict = torch.load(
+                path / "model.pt",
+                map_location="cpu",
+                weights_only=True,
+            )
+            model.load_state_dict(state_dict)
+            return model
+
+        # --- HuggingFace format ---
+        if (path / "config.json").exists():
+            config = LMConfig.from_hf_config(path / "config.json")
+            model = cls(config)
+            hf_sd = _load_hf_state_dict(path)
+            our_sd = _convert_hf_to_custom(hf_sd, config)
+            model.load_state_dict(our_sd)
+            return model
+
+        raise FileNotFoundError(
+            f"No config.yaml or config.json found in {path}"
         )
-        model.load_state_dict(state_dict)
-        return model
 
     # ------------------------------------------------------------------
     # Persistence

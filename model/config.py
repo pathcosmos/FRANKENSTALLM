@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import json
+
 import yaml
 
 
@@ -156,3 +158,29 @@ class LMConfig:
         if "model" in data and isinstance(data["model"], dict):
             data = data["model"]
         return cls.from_dict(data)
+
+    @classmethod
+    def from_hf_config(cls, path: str | Path) -> "LMConfig":
+        """Load config from a HuggingFace-format config.json (LlamaForCausalLM)."""
+        path = Path(path)
+        with open(path, "r", encoding="utf-8") as f:
+            hf = json.load(f)
+
+        rope_theta = 10000.0
+        if "rope_parameters" in hf and isinstance(hf["rope_parameters"], dict):
+            rope_theta = float(hf["rope_parameters"].get("rope_theta", rope_theta))
+        elif "rope_theta" in hf:
+            rope_theta = float(hf["rope_theta"])
+
+        return cls(
+            vocab_size=hf["vocab_size"],
+            d_model=hf["hidden_size"],
+            n_layers=hf["num_hidden_layers"],
+            n_heads=hf["num_attention_heads"],
+            n_kv_heads=hf.get("num_key_value_heads", hf["num_attention_heads"]),
+            d_ffn=hf["intermediate_size"],
+            max_seq_len=hf.get("max_position_embeddings", 4096),
+            rope_theta=rope_theta,
+            dropout=hf.get("attention_dropout", 0.0),
+            bias=hf.get("attention_bias", False),
+        )
