@@ -1511,5 +1511,607 @@ def _get_max_forgetting(sft_p1: dict, base_p1: dict) -> Optional[float]:
     return max(forgetting_values) if forgetting_values else None
 
 
+# =========================================================================
+# ORPO-specific verdict helpers
+# =========================================================================
+
+def _compute_orpo_verdicts(
+    orpo_p1: dict,
+    orpo_zero: dict,
+    sft_p1: dict,
+    sft_zero: dict,
+    training_curve: Optional[dict] = None,
+) -> List[Tuple[str, bool, str]]:
+    """Compute the 4 ORPO-specific evaluation dimensions.
+
+    Returns list of (dimension_name, pass_bool, detail_string).
+    """
+    verdicts: List[Tuple[str, bool, str]] = []
+
+    # ORPO Dim 1: Preference Accuracy (final > 0.65)
+    pref_acc = None
+    if training_curve and training_curve.get("eval_steps"):
+        last_step = training_curve["eval_steps"][-1]
+        pref_acc = last_step.get("rewards_accuracies", last_step.get("preference_accuracy"))
+    if pref_acc is not None:
+        verdicts.append((
+            "ORPO-1: Preference Accuracy",
+            pref_acc > 0.65,
+            f"최종 {pref_acc:.2%} (목표 > 65%)",
+        ))
+    else:
+        verdicts.append(("ORPO-1: Preference Accuracy", False, "데이터 없음"))
+
+    # ORPO Dim 2: Reward Margins (final > 0.1)
+    reward_margin = None
+    if training_curve and training_curve.get("eval_steps"):
+        last_step = training_curve["eval_steps"][-1]
+        reward_margin = last_step.get("rewards_margins", last_step.get("reward_margins"))
+    if reward_margin is not None:
+        verdicts.append((
+            "ORPO-2: Reward Margins",
+            reward_margin > 0.1,
+            f"최종 {reward_margin:.4f} (목표 > 0.1)",
+        ))
+    else:
+        verdicts.append(("ORPO-2: Reward Margins", False, "데이터 없음"))
+
+    # ORPO Dim 3: Parameter Sensitivity (greedy rep < 5% with rep_penalty=1.0)
+    rep_grid = orpo_p1.get("repetition", {}).get("grid_results")
+    param_sens_pass = False
+    param_sens_detail = "데이터 없음"
+    if rep_grid:
+        items = rep_grid if isinstance(rep_grid, list) else list(rep_grid.values())
+        for r in items:
+            if isinstance(r, dict):
+                rp = r.get("repetition_penalty", r.get("rep_penalty"))
+                if rp is not None and abs(float(rp) - 1.0) < 1e-6:
+                    rep_val = r.get("avg_3gram_rep", r.get("3gram_repetition"))
+                    if rep_val is not None:
+                        param_sens_pass = rep_val < 0.05
+                        param_sens_detail = f"rep_penalty=1.0 시 3-gram rep={rep_val:.2%} (목표 < 5%)"
+                    break
+    verdicts.append((
+        "ORPO-3: Parameter Sensitivity",
+        param_sens_pass,
+        param_sens_detail,
+    ))
+
+    # ORPO Dim 4: SFT→ORPO Improvement (rep decreased AND EOS increased)
+    sft_rep = _get_greedy_3gram_rep(sft_p1)
+    orpo_rep = _get_greedy_3gram_rep(orpo_p1)
+    sft_eos = sft_p1.get("generation", {}).get("summary", {}).get("greedy_eos_rate")
+    orpo_eos = orpo_p1.get("generation", {}).get("summary", {}).get("greedy_eos_rate")
+
+    if all(v is not None for v in [sft_rep, orpo_rep, sft_eos, orpo_eos]):
+        rep_improved = orpo_rep < sft_rep
+        eos_improved = orpo_eos > sft_eos
+        verdicts.append((
+            "ORPO-4: SFT→ORPO 개선",
+            rep_improved and eos_improved,
+            f"반복률 {sft_rep:.2%}→{orpo_rep:.2%} ({'↓' if rep_improved else '↑'}), "
+            f"EOS {sft_eos:.0%}→{orpo_eos:.0%} ({'↑' if eos_improved else '↓'})",
+        ))
+    else:
+        verdicts.append(("ORPO-4: SFT→ORPO 개선", False, "데이터 없음"))
+
+    return verdicts
+
+
+# =========================================================================
+# Base vs SFT vs ORPO 3-way Comparison Report
+# =========================================================================
+
+def generate_three_way_report(
+    base_results_dir: Path,
+    sft_results_dir: Path,
+    orpo_phase1_results: dict,
+    orpo_phase2_results: dict,
+    output_path: Path,
+    orpo_output_dir: Optional[Path] = None,
+    training_curve: Optional[dict] = None,
+    total_elapsed_sec: float = 0.0,
+) -> Path:
+    """Generate a comprehensive Base vs SFT vs ORPO 3-way comparison report.
+
+    Args:
+        base_results_dir: Directory containing Base model's phase1/phase2_results.json
+        sft_results_dir: Directory containing SFT model's phase1/phase2_results.json
+        orpo_phase1_results: ORPO Phase 1 results dict
+        orpo_phase2_results: ORPO Phase 2 results dict
+        output_path: Where to write the markdown report
+        orpo_output_dir: ORPO eval outputs directory (for linking)
+        training_curve: Dict with "eval_steps" list of per-step metrics
+        total_elapsed_sec: Total pipeline elapsed time
+
+    Returns:
+        Path to the generated report
+    """
+    base_results_dir = Path(base_results_dir)
+    sft_results_dir = Path(sft_results_dir)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- Load Base results ---
+    base_p1_raw, base_p2_raw = {}, {}
+    p1_file = base_results_dir / "phase1_results.json"
+    p2_file = base_results_dir / "phase2_results.json"
+    if p1_file.exists():
+        with open(p1_file, encoding="utf-8") as f:
+            base_p1_raw = json.load(f)
+    if p2_file.exists():
+        with open(p2_file, encoding="utf-8") as f:
+            base_p2_raw = json.load(f)
+
+    # --- Load SFT results ---
+    sft_p1_raw, sft_p2_raw = {}, {}
+    sft_p1_file = sft_results_dir / "phase1_results.json"
+    sft_p2_file = sft_results_dir / "phase2_results.json"
+    if sft_p1_file.exists():
+        with open(sft_p1_file, encoding="utf-8") as f:
+            sft_p1_raw = json.load(f)
+    if sft_p2_file.exists():
+        with open(sft_p2_file, encoding="utf-8") as f:
+            sft_p2_raw = json.load(f)
+
+    # --- Normalize all ---
+    base_p1 = _normalize_phase1_results(base_p1_raw)
+    base_zero, base_five = _normalize_phase2_results(base_p2_raw)
+    sft_p1 = _normalize_phase1_results(sft_p1_raw)
+    sft_zero, sft_five = _normalize_phase2_results(sft_p2_raw)
+    orpo_p1 = _normalize_phase1_results(orpo_phase1_results)
+    orpo_zero, orpo_five = _normalize_phase2_results(orpo_phase2_results)
+
+    eval_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    lines: List[str] = []
+
+    # =====================================================================
+    # Header
+    # =====================================================================
+    lines.append("# FRANKENSTALLM 3B ORPO 모델 종합 평가 보고서\n")
+    lines.append(f"- **평가 일시**: {eval_datetime}")
+    lines.append(f"- **비교 대상**: Base → SFT → ORPO")
+    lines.append(f"- **총 소요 시간**: {_fmt_seconds(total_elapsed_sec)}")
+    if orpo_output_dir:
+        lines.append(f"- **결과 디렉토리**: {orpo_output_dir}")
+    lines.append("")
+
+    # =====================================================================
+    # 1. Executive Summary
+    # =====================================================================
+    lines.append("## 1. Executive Summary\n")
+
+    # 6 standard verdicts (reuse existing)
+    std_verdicts = _compute_verdicts(orpo_p1, orpo_zero, base_p1, base_zero)
+    # 4 ORPO-specific verdicts
+    orpo_verdicts = _compute_orpo_verdicts(orpo_p1, orpo_zero, sft_p1, sft_zero, training_curve)
+
+    all_verdicts = std_verdicts + orpo_verdicts
+
+    lines.append("| # | 평가 차원 | 결과 | 상세 |")
+    lines.append("|---|----------|------|------|")
+    for i, (dim_name, verdict, detail) in enumerate(all_verdicts, 1):
+        icon = "PASS" if verdict else "FAIL"
+        lines.append(f"| {i} | {dim_name} | **{icon}** | {detail} |")
+    lines.append("")
+
+    pass_count = sum(1 for _, v, _ in all_verdicts if v)
+    total_dims = len(all_verdicts)
+    lines.append(f"**종합**: {pass_count}/{total_dims} 차원 통과\n")
+
+    # Quantitative score (reuse _compute_orpo_score with ORPO results)
+    orpo_score_result = _compute_orpo_score(orpo_p1, orpo_zero, base_p1, base_zero)
+    lines.append(f"**정량 스코어**: {orpo_score_result['total_score']}/100\n")
+
+    # Final decision
+    orpo_rep = _get_greedy_3gram_rep(orpo_p1)
+    orpo_eos = orpo_p1.get("generation", {}).get("summary", {}).get("greedy_eos_rate")
+    orpo_forgetting = _get_max_forgetting(orpo_p1, base_p1)
+    orpo_kobest = _get_kobest_avg(orpo_zero)
+
+    deploy_criteria_met = (
+        orpo_rep is not None and orpo_rep < 0.05
+        and orpo_eos is not None and orpo_eos > 0.90
+        and orpo_forgetting is not None and orpo_forgetting < 5.0
+        and orpo_kobest is not None and orpo_kobest >= 0.43
+    )
+    final_decision = "DEPLOY" if deploy_criteria_met else "RETRY"
+    lines.append(f"**최종 판정**: **{final_decision}**\n")
+    lines.append("")
+
+    # =====================================================================
+    # 2. 학습 곡선 분석
+    # =====================================================================
+    lines.append("## 2. 학습 곡선 분석\n")
+    if training_curve and training_curve.get("eval_steps"):
+        eval_steps = training_curve["eval_steps"]
+
+        lines.append("### Training / Eval Loss\n")
+        lines.append("| Step | Train Loss | Eval Loss | Pref Accuracy | Reward Margin |")
+        lines.append("|------|-----------|-----------|---------------|---------------|")
+        for step_data in eval_steps:
+            step = step_data.get("step", "?")
+            train_loss = _fmt_f(step_data.get("train_loss", step_data.get("loss")), 4)
+            eval_loss = _fmt_f(step_data.get("eval_loss"), 4)
+            pref_acc = _fmt_f(step_data.get("rewards_accuracies", step_data.get("preference_accuracy")), 4)
+            reward_m = _fmt_f(step_data.get("rewards_margins", step_data.get("reward_margins")), 4)
+            lines.append(f"| {step} | {train_loss} | {eval_loss} | {pref_acc} | {reward_m} |")
+        lines.append("")
+
+        # Summary stats
+        first_step = eval_steps[0]
+        last_step = eval_steps[-1]
+        lines.append("### 학습 곡선 요약\n")
+        first_loss = first_step.get("train_loss", first_step.get("loss"))
+        last_loss = last_step.get("train_loss", last_step.get("loss"))
+        if first_loss is not None and last_loss is not None:
+            lines.append(f"- **Train Loss**: {first_loss:.4f} → {last_loss:.4f}")
+        first_eval = first_step.get("eval_loss")
+        last_eval = last_step.get("eval_loss")
+        if first_eval is not None and last_eval is not None:
+            lines.append(f"- **Eval Loss**: {first_eval:.4f} → {last_eval:.4f}")
+        last_pref = last_step.get("rewards_accuracies", last_step.get("preference_accuracy"))
+        if last_pref is not None:
+            lines.append(f"- **최종 Preference Accuracy**: {last_pref:.2%}")
+        last_margin = last_step.get("rewards_margins", last_step.get("reward_margins"))
+        if last_margin is not None:
+            lines.append(f"- **최종 Reward Margin**: {last_margin:.4f}")
+        lines.append("")
+    else:
+        lines.append("학습 곡선 데이터 없음\n")
+
+    # =====================================================================
+    # 3. Perplexity 비교 (지식 보존)
+    # =====================================================================
+    lines.append("## 3. Perplexity 비교 (지식 보존)\n")
+    lines.append("| 데이터셋 | Base PPL | SFT PPL | ORPO PPL | SFT Forgetting | ORPO Forgetting |")
+    lines.append("|---------|---------|---------|---------|----------------|-----------------|")
+
+    base_ppl = base_p1.get("perplexity", {})
+    sft_ppl = sft_p1.get("perplexity", {})
+    orpo_ppl = orpo_p1.get("perplexity", {})
+
+    all_ppl_names = sorted(set(
+        list(base_ppl.keys()) + list(sft_ppl.keys()) + list(orpo_ppl.keys())
+    ))
+    for name in all_ppl_names:
+        base_val = base_ppl.get(name, {}).get("ppl") if isinstance(base_ppl.get(name), dict) else None
+        if base_val is None:
+            base_val = _BASE_PPL_REFERENCE.get(name)
+        sft_val = sft_ppl.get(name, {}).get("ppl") if isinstance(sft_ppl.get(name), dict) else None
+        orpo_val = orpo_ppl.get(name, {}).get("ppl") if isinstance(orpo_ppl.get(name), dict) else None
+
+        sft_forg = f"{(sft_val - base_val) / base_val * 100:+.1f}%" if (sft_val is not None and base_val is not None and base_val > 0) else "—"
+        orpo_forg = f"{(orpo_val - base_val) / base_val * 100:+.1f}%" if (orpo_val is not None and base_val is not None and base_val > 0) else "—"
+
+        lines.append(
+            f"| {name} | {_fmt_f(base_val)} | {_fmt_f(sft_val)} | {_fmt_f(orpo_val)} | "
+            f"{sft_forg} | {orpo_forg} |"
+        )
+    lines.append("")
+
+    # =====================================================================
+    # 4. 생성 품질 비교
+    # =====================================================================
+    lines.append("## 4. 생성 품질 비교\n")
+
+    base_gen_summary = base_p1.get("generation", {}).get("summary", {})
+    sft_gen_summary = sft_p1.get("generation", {}).get("summary", {})
+    orpo_gen_summary = orpo_p1.get("generation", {}).get("summary", {})
+
+    base_3gram = base_gen_summary.get("greedy_avg_3gram_rep", _BASE_GEN_REFERENCE.get("greedy_3gram_rep"))
+    sft_3gram = sft_gen_summary.get("greedy_avg_3gram_rep")
+    orpo_3gram = orpo_gen_summary.get("greedy_avg_3gram_rep")
+
+    base_4gram = base_gen_summary.get("greedy_avg_4gram_rep", _BASE_GEN_REFERENCE.get("greedy_4gram_rep"))
+    sft_4gram = sft_gen_summary.get("greedy_avg_4gram_rep")
+    orpo_4gram = orpo_gen_summary.get("greedy_avg_4gram_rep")
+
+    base_eos = base_gen_summary.get("greedy_eos_rate", _BASE_GEN_REFERENCE.get("greedy_eos_rate"))
+    sft_eos_val = sft_gen_summary.get("greedy_eos_rate")
+    orpo_eos_val = orpo_gen_summary.get("greedy_eos_rate")
+
+    lines.append("| 지표 | Base | SFT | ORPO | SFT→ORPO 변화 |")
+    lines.append("|------|------|-----|------|---------------|")
+
+    # 3-gram rep
+    sft_orpo_3gram_diff = ""
+    if sft_3gram is not None and orpo_3gram is not None:
+        d = (orpo_3gram - sft_3gram) * 100
+        sft_orpo_3gram_diff = f"{'+' if d >= 0 else ''}{d:.1f}pp"
+    lines.append(f"| Greedy 3-gram 반복률 | {_fmt_pct(base_3gram)} | {_fmt_pct(sft_3gram)} | "
+                 f"{_fmt_pct(orpo_3gram)} | {sft_orpo_3gram_diff} |")
+
+    # 4-gram rep
+    sft_orpo_4gram_diff = ""
+    if sft_4gram is not None and orpo_4gram is not None:
+        d = (orpo_4gram - sft_4gram) * 100
+        sft_orpo_4gram_diff = f"{'+' if d >= 0 else ''}{d:.1f}pp"
+    lines.append(f"| Greedy 4-gram 반복률 | {_fmt_pct(base_4gram)} | {_fmt_pct(sft_4gram)} | "
+                 f"{_fmt_pct(orpo_4gram)} | {sft_orpo_4gram_diff} |")
+
+    # EOS rate
+    sft_orpo_eos_diff = ""
+    if sft_eos_val is not None and orpo_eos_val is not None:
+        d = (orpo_eos_val - sft_eos_val) * 100
+        sft_orpo_eos_diff = f"{'+' if d >= 0 else ''}{d:.1f}pp"
+    lines.append(f"| EOS 종료율 | {_fmt_pct(base_eos)} | {_fmt_pct(sft_eos_val)} | "
+                 f"{_fmt_pct(orpo_eos_val)} | {sft_orpo_eos_diff} |")
+    lines.append("")
+
+    # =====================================================================
+    # 5. 한국어 벤치마크
+    # =====================================================================
+    lines.append("## 5. 한국어 벤치마크\n")
+
+    # KoBEST
+    lines.append("### KoBEST (0-shot)\n")
+    lines.append("| 태스크 | Base | SFT | ORPO | Base→ORPO |")
+    lines.append("|--------|------|-----|------|-----------|")
+
+    kobest_tasks = ["kobest_boolq", "kobest_copa", "kobest_hellaswag",
+                    "kobest_sentineg", "kobest_wic"]
+    base_kobest_accs, sft_kobest_accs, orpo_kobest_accs = [], [], []
+
+    for t in kobest_tasks:
+        base_a = _get_acc(base_zero.get(t, {})) if t in base_zero else _BASE_BENCH_REFERENCE.get(t)
+        sft_a = _get_acc(sft_zero.get(t, {})) if t in sft_zero else None
+        orpo_a = _get_acc(orpo_zero.get(t, {})) if t in orpo_zero else None
+
+        if base_a is not None:
+            base_kobest_accs.append(base_a)
+        if sft_a is not None:
+            sft_kobest_accs.append(sft_a)
+        if orpo_a is not None:
+            orpo_kobest_accs.append(orpo_a)
+
+        diff = ""
+        if orpo_a is not None and base_a is not None:
+            d = (orpo_a - base_a) * 100
+            diff = f"{'+' if d >= 0 else ''}{d:.1f}pp"
+
+        lines.append(f"| {t} | {_fmt_pct(base_a)} | {_fmt_pct(sft_a)} | {_fmt_pct(orpo_a)} | {diff} |")
+
+    # Averages
+    base_kavg = sum(base_kobest_accs) / len(base_kobest_accs) if base_kobest_accs else None
+    sft_kavg = sum(sft_kobest_accs) / len(sft_kobest_accs) if sft_kobest_accs else None
+    orpo_kavg = sum(orpo_kobest_accs) / len(orpo_kobest_accs) if orpo_kobest_accs else None
+    avg_diff = ""
+    if orpo_kavg is not None and base_kavg is not None:
+        d = (orpo_kavg - base_kavg) * 100
+        avg_diff = f"{'+' if d >= 0 else ''}{d:.1f}pp"
+    lines.append(f"| **평균** | **{_fmt_pct(base_kavg)}** | **{_fmt_pct(sft_kavg)}** | "
+                 f"**{_fmt_pct(orpo_kavg)}** | **{avg_diff}** |")
+    lines.append("")
+
+    # HAE-RAE
+    lines.append("### HAE-RAE (0-shot)\n")
+    base_haerae = _get_acc(base_zero.get("haerae", {})) if "haerae" in base_zero else _BASE_BENCH_REFERENCE.get("haerae")
+    sft_haerae = _get_acc(sft_zero.get("haerae", {})) if "haerae" in sft_zero else None
+    orpo_haerae = _get_acc(orpo_zero.get("haerae", {})) if "haerae" in orpo_zero else None
+    lines.append(f"- Base: {_fmt_pct(base_haerae)} → SFT: {_fmt_pct(sft_haerae)} → ORPO: {_fmt_pct(orpo_haerae)}")
+    lines.append("")
+
+    # MMLU-KO
+    lines.append("### MMLU-KO (0-shot)\n")
+    base_mmlu_ko = _get_acc(base_zero.get("global_mmlu_ko", {})) if "global_mmlu_ko" in base_zero else _BASE_BENCH_REFERENCE.get("global_mmlu_ko")
+    sft_mmlu_ko = _get_acc(sft_zero.get("global_mmlu_ko", {})) if "global_mmlu_ko" in sft_zero else None
+    orpo_mmlu_ko = _get_acc(orpo_zero.get("global_mmlu_ko", {})) if "global_mmlu_ko" in orpo_zero else None
+    lines.append(f"- Base: {_fmt_pct(base_mmlu_ko)} → SFT: {_fmt_pct(sft_mmlu_ko)} → ORPO: {_fmt_pct(orpo_mmlu_ko)}")
+    lines.append("")
+
+    # =====================================================================
+    # 6. 영어 벤치마크
+    # =====================================================================
+    lines.append("## 6. 영어 벤치마크\n")
+    lines.append("| 태스크 | Base | SFT | ORPO | Base→ORPO |")
+    lines.append("|--------|------|-----|------|-----------|")
+
+    en_tasks_list = ["hellaswag", "arc_easy", "arc_challenge", "winogrande", "piqa"]
+    for t in en_tasks_list:
+        prefer_norm = t in ["hellaswag", "arc_challenge"]
+        base_a = _get_acc(base_zero.get(t, {}), prefer_norm=prefer_norm) if t in base_zero else _BASE_BENCH_REFERENCE.get(t)
+        sft_a = _get_acc(sft_zero.get(t, {}), prefer_norm=prefer_norm) if t in sft_zero else None
+        orpo_a = _get_acc(orpo_zero.get(t, {}), prefer_norm=prefer_norm) if t in orpo_zero else None
+
+        diff = ""
+        if orpo_a is not None and base_a is not None:
+            d = (orpo_a - base_a) * 100
+            diff = f"{'+' if d >= 0 else ''}{d:.1f}pp"
+        lines.append(f"| {t} | {_fmt_pct(base_a)} | {_fmt_pct(sft_a)} | {_fmt_pct(orpo_a)} | {diff} |")
+
+    # MMLU-EN averages
+    _MMLU_EN_GROUPS = {"mmlu", "mmlu_humanities", "mmlu_social_sciences", "mmlu_stem", "mmlu_other"}
+
+    def _mmlu_en_avg(zero: dict) -> Optional[float]:
+        accs = []
+        for t, m in zero.items():
+            if (t.startswith("mmlu_") or t == "mmlu") and t not in _MMLU_EN_GROUPS:
+                a = _get_acc(m)
+                if a is not None:
+                    accs.append(a)
+        if not accs:
+            for t in _MMLU_EN_GROUPS:
+                if t in zero:
+                    a = _get_acc(zero[t])
+                    if a is not None:
+                        accs.append(a)
+        return sum(accs) / len(accs) if accs else None
+
+    base_mmlu_en = _mmlu_en_avg(base_zero)
+    sft_mmlu_en = _mmlu_en_avg(sft_zero)
+    orpo_mmlu_en = _mmlu_en_avg(orpo_zero)
+
+    mmlu_en_diff = ""
+    if orpo_mmlu_en is not None and base_mmlu_en is not None:
+        d = (orpo_mmlu_en - base_mmlu_en) * 100
+        mmlu_en_diff = f"{'+' if d >= 0 else ''}{d:.1f}pp"
+    lines.append(f"| MMLU-EN 평균 | {_fmt_pct(base_mmlu_en)} | {_fmt_pct(sft_mmlu_en)} | "
+                 f"{_fmt_pct(orpo_mmlu_en)} | {mmlu_en_diff} |")
+    lines.append("")
+
+    # =====================================================================
+    # 7. Calibration
+    # =====================================================================
+    lines.append("## 7. Calibration 비교\n")
+    lines.append("| 지표 | Base | SFT | ORPO |")
+    lines.append("|------|------|-----|------|")
+
+    base_cal = base_p1.get("calibration", {})
+    sft_cal = sft_p1.get("calibration", {})
+    orpo_cal = orpo_p1.get("calibration", {})
+
+    cal_metrics = [
+        ("top1_accuracy", "Top-1 Accuracy"),
+        ("top5_accuracy", "Top-5 Accuracy"),
+        ("top10_accuracy", "Top-10 Accuracy"),
+    ]
+    for key, label in cal_metrics:
+        base_v = base_cal.get(key, _BASE_CALIB_REFERENCE.get(key))
+        sft_v = sft_cal.get(key)
+        orpo_v = orpo_cal.get(key)
+        lines.append(f"| {label} | {_fmt_f(base_v)} | {_fmt_f(sft_v)} | {_fmt_f(orpo_v)} |")
+    lines.append("")
+
+    # =====================================================================
+    # 8. ORPO 고유 지표
+    # =====================================================================
+    lines.append("## 8. ORPO 고유 지표\n")
+
+    # Final preference accuracy & reward margins
+    if training_curve and training_curve.get("eval_steps"):
+        last_step = training_curve["eval_steps"][-1]
+        final_pref = last_step.get("rewards_accuracies", last_step.get("preference_accuracy"))
+        final_margin = last_step.get("rewards_margins", last_step.get("reward_margins"))
+        if final_pref is not None:
+            lines.append(f"- **최종 Preference Accuracy**: {final_pref:.2%}")
+        if final_margin is not None:
+            lines.append(f"- **최종 Reward Margins**: {final_margin:.4f}")
+    else:
+        lines.append("- Preference Accuracy / Reward Margins: 데이터 없음")
+
+    # Parameter sensitivity
+    rep_grid = orpo_p1.get("repetition", {}).get("grid_results")
+    if rep_grid:
+        items = rep_grid if isinstance(rep_grid, list) else list(rep_grid.values())
+        for r in items:
+            if isinstance(r, dict):
+                rp = r.get("repetition_penalty", r.get("rep_penalty"))
+                if rp is not None and abs(float(rp) - 1.0) < 1e-6:
+                    rep_val = r.get("avg_3gram_rep", r.get("3gram_repetition"))
+                    if rep_val is not None:
+                        verdict = "PASS" if rep_val < 0.05 else "FAIL"
+                        lines.append(f"- **Parameter Sensitivity**: rep_penalty=1.0 → 3-gram rep={rep_val:.2%} "
+                                     f"(목표 < 5%) → {verdict}")
+                    break
+    lines.append("")
+
+    # =====================================================================
+    # 9. 반복률 그리드 서치
+    # =====================================================================
+    lines.append("## 9. 반복률 그리드 서치\n")
+    if rep_grid:
+        items = rep_grid if isinstance(rep_grid, list) else list(rep_grid.values())
+        rep_rows = []
+        for r in items:
+            if isinstance(r, dict):
+                rep_rows.append({
+                    "config": r.get("params", "?"),
+                    "temp": r.get("temperature"),
+                    "rep_pen": r.get("repetition_penalty"),
+                    "3gram": r.get("avg_3gram_rep", r.get("3gram_repetition", float("inf"))),
+                    "4gram": r.get("avg_4gram_rep", r.get("4gram_repetition")),
+                    "eos_rate": r.get("eos_rate"),
+                    "avg_tokens": r.get("avg_tokens"),
+                })
+        rep_rows.sort(key=lambda x: x["3gram"] if isinstance(x["3gram"], (int, float)) else float("inf"))
+
+        lines.append("| 설정 | Temp | Rep Pen | 3-gram | 4-gram | EOS Rate | Avg Tokens |")
+        lines.append("|------|------|---------|--------|--------|----------|-----------|")
+        for i, r in enumerate(rep_rows):
+            marker = " **← best**" if i == 0 else ""
+            lines.append(
+                f"| {r['config']} | {_fmt_f(r['temp'], 2)} | {_fmt_f(r['rep_pen'], 2)} | "
+                f"{_fmt_f(r['3gram'])} | {_fmt_f(r['4gram'])} | "
+                f"{_fmt_f(r['eos_rate'])} | {_fmt_f(r['avg_tokens'], 1)} |{marker}"
+            )
+        lines.append("")
+    else:
+        lines.append("반복률 그리드 서치 데이터 없음\n")
+
+    # =====================================================================
+    # 10. 생성 샘플
+    # =====================================================================
+    lines.append("## 10. 생성 샘플\n")
+    orpo_gen = orpo_p1.get("generation", {})
+    orpo_samples = orpo_gen.get("samples", [])
+    greedy_samples = [s for s in orpo_samples if isinstance(s, dict) and s.get("temperature", 1.0) == 0.0]
+    if not greedy_samples:
+        greedy_samples = orpo_samples  # fallback: use all samples
+
+    if greedy_samples:
+        lines.append("### ORPO Greedy 생성 샘플\n")
+        for i, s in enumerate(greedy_samples[:15], 1):
+            if isinstance(s, dict):
+                prompt = s.get("prompt", "")
+                text = s.get("text", s.get("generated_text", ""))
+                if len(text) > 500:
+                    text = text[:500] + "..."
+                hit_eos = s.get("hit_eos", "?")
+                rep3 = s.get("3gram_rep", s.get("avg_3gram_rep"))
+                tokens = s.get("generated_tokens", s.get("num_tokens", "?"))
+                lines.append(f"**[{i}]** `{prompt}`")
+                lines.append(f"> {text}")
+                meta_parts = [f"EOS={hit_eos}"]
+                if rep3 is not None:
+                    meta_parts.append(f"3gram_rep={rep3:.2%}")
+                meta_parts.append(f"tokens={tokens}")
+                lines.append(f"> *{', '.join(meta_parts)}*\n")
+    else:
+        lines.append("생성 샘플 데이터 없음\n")
+
+    # =====================================================================
+    # 11. 최종 판정
+    # =====================================================================
+    lines.append("## 11. 최종 판정\n")
+    lines.append("### 배포 기준 충족 여부\n")
+    lines.append("| 조건 | 기준 | 현재 값 | 충족 |")
+    lines.append("|------|------|---------|------|")
+
+    criteria = [
+        ("Greedy 3-gram 반복률", "< 5%", _fmt_pct(orpo_rep),
+         "YES" if orpo_rep is not None and orpo_rep < 0.05 else "NO"),
+        ("EOS 종료율", "> 90%", _fmt_pct(orpo_eos),
+         "YES" if orpo_eos is not None and orpo_eos > 0.90 else "NO"),
+        ("PPL Forgetting", "< 5%", f"{orpo_forgetting:.1f}%" if orpo_forgetting is not None else "N/A",
+         "YES" if orpo_forgetting is not None and orpo_forgetting < 5.0 else "NO"),
+        ("KoBEST 평균", ">= 43%", _fmt_pct(orpo_kobest),
+         "YES" if orpo_kobest is not None and orpo_kobest >= 0.43 else "NO"),
+    ]
+    for cond, threshold, current, met in criteria:
+        lines.append(f"| {cond} | {threshold} | {current} | {met} |")
+    lines.append("")
+
+    if deploy_criteria_met:
+        lines.append("**→ 모든 배포 기준 충족: DEPLOY (Phase 4: GGUF 변환 + Ollama 배포 진행)**\n")
+    else:
+        lines.append("**→ 배포 기준 미달: RETRY (ORPO 재학습 또는 하이퍼파라미터 조정 필요)**\n")
+
+    lines.append("---\n")
+    lines.append("*이 보고서는 `eval/report_generator.py::generate_three_way_report()`에 의해 자동 생성되었습니다.*")
+
+    report_text = "\n".join(lines)
+    output_path.write_text(report_text, encoding="utf-8")
+
+    # Also save to orpo_output_dir if provided
+    if orpo_output_dir:
+        orpo_output_dir = Path(orpo_output_dir)
+        orpo_output_dir.mkdir(parents=True, exist_ok=True)
+        (orpo_output_dir / "orpo_three_way_report.md").write_text(report_text, encoding="utf-8")
+
+    return output_path
+
+
 if __name__ == "__main__":
     print("report_generator.py — use via full_eval_pipeline.py or sft_eval_pipeline.py")

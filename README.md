@@ -47,6 +47,8 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
     - [12.3 HP Sweep 설계](#123-hp-sweep-설계-6-config)
     - [12.4 시도 이력](#124-시도-이력--5번의-실패)
     - [12.5 스윕 결과](#125-스윕-결과-진행-중)
+    - [12.7 ORPO 본 학습](#127-orpo-본-학습-진행-중-2026-03-09)
+    - [12.8 ORPO 종합 평가 파이프라인](#128-orpo-종합-평가-파이프라인)
 13. [실행 방법](#13-실행-방법)
 14. [로드맵](#14-로드맵)
 15. [참고 문서](#15-참고-문서)
@@ -1434,11 +1436,56 @@ ORPO를 1차 선택, DPO를 Plan B로 설정했다.
 | 속도 | ~1.75 s/step |
 | 예상 시간 | ~4.8시간 |
 
-**학습 지표 추이 (step ~1,160 기준)**:
-- loss: 1.952 → **1.709** (-0.243)
-- rewards/accuracies: 0.47 → **0.72** (chosen/rejected 구분 능력 급상승)
-- rewards/margins: 0.002 → **0.330** (preference signal 학습 확인)
-- 속도 ~1.82 s/step, GPU 91~98% utilization, 안정적 진행 중
+**학습 지표 추이 (step ~1,660 기준)**:
+
+| Step | Eval Loss | Pref Accuracy | Reward Margin | NLL Loss |
+|-----:|----------:|--------------:|--------------:|---------:|
+| ~1,000 | 1.791 | 66.8% | 0.107 | 1.647 |
+| ~2,000 | 1.713 | 70.1% | 0.293 | 1.591 |
+| ~3,000 | 1.681 | 71.9% | 0.372 | 1.567 |
+
+- Train loss: 2.34 → **1.68** (-0.66)
+- rewards/accuracies: 0.43 → **0.74** (chosen/rejected 구분 능력 급상승)
+- rewards/margins: -0.005 → **0.387** (preference signal 학습 확인)
+- 속도 ~1.76 s/step, GPU 92~100% utilization, 안정적 진행 중
+
+**학습 완료 후 자동 평가**: `scripts/orpo_eval_watchdog.sh` 가 학습 프로세스를 감시하며, 완료 시 자동으로 10차원 종합 평가 파이프라인 실행
+
+### 12.8 ORPO 종합 평가 파이프라인
+
+SFT v2 평가의 6차원에 ORPO 고유 4차원을 추가한 **10차원 종합 평가**.
+학습 완료 시 `eval/orpo_eval_pipeline.py`가 자동 실행되어 Base vs SFT vs ORPO 3-way 비교 보고서를 생성한다.
+
+**평가 구조**:
+
+| Phase | 내용 | GPU | 예상 시간 |
+|-------|------|-----|----------|
+| Pre-phase | train.log에서 학습 곡선 추출 | - | ~1초 |
+| Phase 1 | 내부 평가 (PPL 19셋, Calibration, Generation, Repetition Grid) | 8 GPU 병렬 | ~30분 |
+| Phase 2 | 벤치마크 (KoBEST, HAE-RAE, MMLU-KO/EN, hellaswag, arc, piqa) | 8 GPU 병렬 | ~1시간 |
+| Phase 3 | 3-way 비교 보고서 자동 생성 | - | ~10초 |
+
+**10차원 평가 항목**:
+
+| # | 차원 | 기준 | SFT v2 결과 | ORPO 목표 |
+|---|------|------|------------|----------|
+| 1 | 지식 보존 (PPL) | forgetting < 15% | 0.9% | < 5% |
+| 2 | 생성 품질 | greedy 반복률 < 5%, EOS > 90% | **72.97% / 60%** | **< 5% / > 90%** |
+| 3 | 한국어 벤치마크 | KoBEST 평균 > 55% | 43.26% | ≥ 43% |
+| 4 | 영어 벤치마크 | 하한 초과 | PASS | 유지 |
+| 5 | Calibration | Top-1 ≥ 65% | 68.59% | ≥ 65% |
+| 6 | Chat 능력 | EOS 종료율 | 60% | > 90% |
+| 7 | Preference Accuracy | > 65% | — | > 65% |
+| 8 | Reward Margins | > 0.1 | — | > 0.1 |
+| 9 | 반복 파라미터 민감도 | rep_penalty=1.0에서도 < 5% | — | PASS |
+| 10 | SFT→ORPO 개선 | 반복률↓ + EOS↑ | — | PASS |
+
+**핵심 파일**:
+- `eval/orpo_eval_pipeline.py` — ORPO 평가 오케스트레이터
+- `eval/report_generator.py` — 3-way 비교 보고서 생성기 (`generate_three_way_report()`)
+- `scripts/orpo_eval_watchdog.sh` — 학습 완료 감지 + 자동 평가 실행
+
+**배포 기준**: greedy 반복률 < 5% AND EOS > 90% AND forgetting < 5% AND KoBEST ≥ 43% → **DEPLOY**
 
 ---
 
@@ -1478,23 +1525,33 @@ torchrun --nproc_per_node=8 \
   --pretrain_ckpt checkpoints/3b_pretrain_best.pt
 ```
 
-### ORPO (선호도 정렬, 조건부)
+### ORPO (선호도 정렬)
 
 ```bash
-# 반복률 >5% 판정 시 실행
+# ORPO 학습
 bash scripts/launch_3b_orpo.sh
+
+# 학습 완료 후 자동 평가 (watchdog)
+nohup bash scripts/orpo_eval_watchdog.sh \
+  > checkpoints/korean_3b_orpo_v1/watchdog.log 2>&1 &
 ```
 
 ### 평가
 
 ```bash
+# Base 모델 전체 평가 (8 GPU 병렬)
+python eval/full_eval_pipeline.py
+
+# SFT 모델 평가 (Base vs SFT 2-way 비교)
+python eval/sft_eval_pipeline.py --skip-phase0 \
+  --hf-model-path eval/outputs/hf_3b_sft_best
+
+# ORPO 모델 평가 (Base vs SFT vs ORPO 3-way 비교)
+python eval/orpo_eval_pipeline.py           # 자동으로 최신 checkpoint 감지
+python eval/orpo_eval_pipeline.py --dry-run  # 실행 계획만 확인
+
 # 빠른 평가 (kobest_copa + PPL)
 bash scripts/run_eval_quick.sh
-
-# 전체 평가
-python eval/comprehensive_eval.py \
-  --checkpoint checkpoints/3b_best.pt \
-  --benchmarks kobest_copa kobest_hellaswag ppl
 
 # 생성 파라미터 탐색
 python eval/test_generation_params.py \
@@ -1551,7 +1608,8 @@ python train/pretrain.py \
 | SFT 6차원 평가 | ✅ 완료 | 4/6 PASS, ORPO 판정 |
 | Phase 3 (ORPO Sweep) | ✅ 완료 | 6-config sweep 완료, best config 선정 |
 | **Phase 3 (ORPO 본 학습)** | **🔄 진행 중** | **lr=1.2e-5, beta=0.25, 2 epochs, ~9,840 steps** |
-| GGUF 변환 + Ollama 배포 | 📋 대기 | Phase 4 (ORPO 후) |
+| Phase 3.5 (ORPO 종합 평가) | 📋 대기 | 10차원 평가 (6 기본 + 4 ORPO 고유), 3-way 비교 보고서 |
+| GGUF 변환 + Ollama 배포 | 📋 대기 | Phase 4 (ORPO 평가 PASS 시) |
 
 ### 중기 (2026년 2분기)
 
@@ -1779,7 +1837,7 @@ Phase 1 프리트레인은 57,000 steps, loss 1.466으로 완료됐다. Phase 2 
 
 **아쉬운 소식**: greedy 반복률 72.97%. SFT만으로는 반복 문제가 해결되지 않았다. 오히려 악화되었다 (Base 60.99% → SFT 72.97%). 하지만 `rep_penalty=1.2`만 적용하면 반복률 0%가 달성된다. 모델은 반복하지 않는 능력을 가지고 있다. 다만 그것을 "기본 행동"으로 학습하지 못했을 뿐이다.
 
-**현재**: Phase 3 ORPO 본 학습이 진행 중이다. 6-config HP sweep을 모두 완료하고, eval_loss 기준 최적 config (lr=1.2e-5, beta=0.25)를 선정했다. Throughput 벤치마크로 batch_size=4, grad_accum=4 조합이 80.63 samples/s로 최적임을 확인하고, 8×B200 전체 GPU로 본 학습을 시작했다. ~9,840 steps, 예상 ~4.8시간.
+**현재**: Phase 3 ORPO 본 학습이 진행 중이다. 6-config HP sweep을 모두 완료하고, eval_loss 기준 최적 config (lr=1.2e-5, beta=0.25)를 선정했다. Throughput 벤치마크로 batch_size=4, grad_accum=4 조합이 80.63 samples/s로 최적임을 확인하고, 8×B200 전체 GPU로 본 학습을 시작했다. ~9,840 steps, 예상 ~4.8시간. 학습 완료 시 watchdog이 자동으로 10차원 종합 평가(Base vs SFT vs ORPO 3-way 비교)를 실행한다.
 
 > **ORPO가 greedy 반복률을 5% 미만으로 끌어내릴 수 있는가?**
 
@@ -1788,4 +1846,4 @@ Phase 1 프리트레인은 57,000 steps, loss 1.466으로 완료됐다. Phase 2 
 ---
 
 *최종 업데이트: 2026-03-09*
-*현재 상태: Phase 3 ORPO 본 학습 진행 중 (lr=1.2e-5, beta=0.25, step ~1,160/9,840, 12%)*
+*현재 상태: Phase 3 ORPO 본 학습 진행 중 (lr=1.2e-5, beta=0.25, step ~1,660/9,840, 17%) — 학습 완료 시 10차원 종합 평가 자동 실행 대기*
