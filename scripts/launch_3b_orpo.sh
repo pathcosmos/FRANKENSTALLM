@@ -30,9 +30,9 @@ NPROC=8
 MASTER_PORT="${MASTER_PORT:-29502}"
 
 # ORPO 하이퍼파라미터
-BATCH_SIZE=2
-GRAD_ACCUM=8
-LR=8e-6
+BATCH_SIZE=4
+GRAD_ACCUM=4
+LR=1.2e-5
 BETA=0.25
 EPOCHS=2
 MAX_LENGTH=1536
@@ -42,7 +42,6 @@ EVAL_SPLIT_RATIO=0.05
 EVAL_STEPS=500
 EARLY_STOPPING_PATIENCE=3
 SAVE_TOTAL_LIMIT=5
-LOSS_TYPE=orpo
 SEED=42
 
 EXTRA_ARGS="$@"
@@ -55,8 +54,8 @@ export NCCL_MIN_NCHANNELS=16
 export NCCL_MAX_NCHANNELS=16
 # ORPO forward-backward 패스는 pretrain보다 메모리 변동이 크므로 버퍼 128MB 유지
 export NCCL_BUFFSIZE=134217728
-export OMP_NUM_THREADS=4
-export MKL_NUM_THREADS=4
+export OMP_NUM_THREADS=9
+export MKL_NUM_THREADS=9
 # OOM 방지: 메모리 단편화 완화 (ORPO는 chosen/rejected 동시 forward → 메모리 민감)
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # P2P NVLink 직접 통신 활성화
@@ -131,7 +130,6 @@ echo "  LR              : ${LR}"
 echo "  Beta (ORPO)     : ${BETA}"
 echo "  Batch           : ${BATCH_SIZE} (local) × ${NPROC} GPU × ${GRAD_ACCUM} accum = ${EFF_BATCH}"
 echo "  Max length      : ${MAX_LENGTH}"
-echo "  Loss type       : ${LOSS_TYPE}"
 echo "  Weight decay    : ${WEIGHT_DECAY}"
 echo "  Eval steps      : ${EVAL_STEPS}"
 echo "  Early stop      : patience=${EARLY_STOPPING_PATIENCE}"
@@ -151,7 +149,6 @@ torchrun \
     --batch_size ${BATCH_SIZE} \
     --gradient_accumulation_steps ${GRAD_ACCUM} \
     --max_length ${MAX_LENGTH} \
-    --loss_type ${LOSS_TYPE} \
     --weight_decay ${WEIGHT_DECAY} \
     --eval_split_ratio ${EVAL_SPLIT_RATIO} \
     --eval_steps ${EVAL_STEPS} \

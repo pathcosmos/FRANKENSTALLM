@@ -9,7 +9,7 @@
 #
 # [설계 근거]
 #   - beta=0.25: 반복률 73%는 극단적 → 강한 OR loss 필요 (기존 0.1에서 상향)
-#   - lr=8e-6: 3B는 7B보다 용량 작아 약간 높은 lr 적절
+#   - lr=1.2e-5: HP sweep 6-config 결과 최적 (eval_loss 1.862, margin +0.009)
 #   - epochs=2: 683K 규모에 3 epoch은 과적합 위험
 #   - max_length=1536: P95=880 tokens, 99%+ 커버 + VRAM 25% 절약
 
@@ -19,7 +19,7 @@ output_dir: checkpoints/korean_3b_orpo
 
 # Training
 epochs: 2
-lr: 8.0e-6
+lr: 1.2e-5
 beta: 0.25
 batch_size: 4
 gradient_accumulation_steps: 4

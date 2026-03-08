@@ -1,11 +1,11 @@
 # FRANKENSTALLM
 
-![Phase 3](https://img.shields.io/badge/Phase_3_ORPO-HP_Sweep_중-blue)
+![Phase 3](https://img.shields.io/badge/Phase_3_ORPO-본_학습_중-blue)
 ![Model](https://img.shields.io/badge/Model-3B_Korean_LLM-green)
 ![GPU](https://img.shields.io/badge/GPU-8×_NVIDIA_B200-76b900)
 ![FP8](https://img.shields.io/badge/Precision-MXFP8-orange)
 ![SFT](https://img.shields.io/badge/SFT-완료_val__loss_1.8851-success)
-![Status](https://img.shields.io/badge/Status-ORPO_HP_Sweep-ff9900)
+![Status](https://img.shields.io/badge/Status-ORPO_Full_Training-ff9900)
 
 > **한국어 3B LLM을 8× NVIDIA B200 위에서 처음부터 직접 만든다.**
 > Frankenstein처럼 조각을 이어 붙이고, 철강처럼 단단하게 단련한다.
@@ -76,7 +76,7 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
 ## 2. 현재 상태 — 한눈에 보기
 
 ```
-2026-03-08 기준
+2026-03-09 기준
 ```
 
 | 단계 | 상태 | 세부 내용 |
@@ -85,7 +85,8 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
 | Phase 1: 3B Pretrain | ✅ 완료 | 57,000 steps, loss 1.466, ~63시간 |
 | Phase 2: SFT | ✅ 완료 | 25,500 steps (early stop), val_loss 1.8851, ~15.5시간 |
 | Phase 2.5: SFT 평가 | ✅ 완료 | 6차원 평가 4/6 PASS, ORPO 진행 결정 |
-| **Phase 3: ORPO** | **🔄 HP Sweep 중** | **630K pairs, 6-config sweep 4/6 완료** |
+| Phase 3: ORPO Sweep | ✅ 완료 | 6-config sweep 완료, best: lr=1.2e-5, beta=0.25 |
+| **Phase 3: ORPO 본 학습** | **🔄 진행 중** | **630K pairs, 2 epochs, ~9,840 steps, ~4.8시간** |
 | Phase 4: 배포 | 📋 대기 | GGUF 변환 → Ollama 서빙 |
 
 ### Phase 2 (SFT) 최종 결과
@@ -1398,18 +1399,42 @@ ORPO를 1차 선택, DPO를 Plan B로 설정했다.
 
 가장 심각했던 것은 TRL NaN 버그로, 0 response tokens → log(0) = -inf → NaN 전파 체인을 일으켰다. 상세: `reports/2026-03-08_ORPO_TRAINING_JOURNEY.md`
 
-### 12.5 스윕 결과 (진행 중)
+### 12.5 스윕 최종 결과
 
-| Run | Name | Train Loss | Eval Loss | Margin | Status |
-|-----|------|-----------|-----------|--------|--------|
-| 1 | baseline_b015 | 1.811 | 1.827 | 0.004 | ✅ 완료 |
-| 2 | baseline_b025 | 1.890 | 1.906 | 0.009 | ✅ 완료 |
-| 3 | strong_b035 | 2.055 | 1.985 | 0.007 | ✅ 완료 |
-| 4 | fast_lr12e6 | 1.917 | 1.862 | 0.009 | ✅ 완료 |
-| 5 | conserv_lr5e6 | - | - | - | 🔄 진행중 |
-| 6 | short_1024 | - | - | - | ⏳ 대기중 |
+| Run | Name | Beta | LR | MaxLen | Train Loss | Eval Loss | Margin | Status |
+|-----|------|------|----|--------|-----------|-----------|--------|--------|
+| 1 | baseline_b015 | 0.15 | 8e-6 | 1536 | 1.811 | 1.827 | 0.004 | ✅ |
+| 2 | baseline_b025 | 0.25 | 8e-6 | 1536 | 1.890 | 1.906 | 0.009 | ✅ |
+| 3 | strong_b035 | 0.35 | 8e-6 | 1536 | 2.055 | 1.985 | 0.007 | ✅ |
+| **4** | **fast_lr12e6** | **0.25** | **1.2e-5** | **1536** | **1.917** | **1.862** | **0.009** | **🏆 Best** |
+| 5 | conserv_lr5e6 | 0.25 | 5e-6 | 1536 | 1.833 | 1.910 | 0.004 | ✅ |
+| 6 | short_1024 | 0.25 | 8e-6 | 1024 | 1.664 | 1.695 | 0.007 | ✅ |
 
-**초기 관찰**: eval_loss 기준 Run 4 (fast, lr=1.2e-5)가 최저. Beta 높을수록 train loss 증가하나 margin도 커짐. Sweep 완료 후 최적 config로 본 학습 예정.
+**Best config: Run 4** (eval_loss 1.862 최저, margin 0.009 최고, 빠른 수렴).
+
+### 12.6 Throughput 벤치마크 → 본 학습 설정
+
+본 학습 전 batch/grad_accum 조합의 throughput을 측정하여 최적 설정을 결정:
+
+| batch_size | grad_accum | eff_batch | Throughput | 비고 |
+|-----------|-----------|----------|-----------|------|
+| **4** | **4** | **128** | **80.63 samples/s** | **선정** |
+| 2 | 8 | 128 | 73.14 samples/s | 기존 설정 |
+| 8 | 2 | 128 | OOM | |
+
+### 12.7 ORPO 본 학습 (진행 중, 2026-03-09)
+
+| 파라미터 | 값 |
+|---------|-----|
+| Beta / LR | 0.25 / 1.2e-5 (Sweep Run 4) |
+| Batch / Accum / Eff | 4 / 4 / 128 (벤치마크 최적) |
+| Max length | 1536 |
+| Epochs | 2 (~9,840 steps) |
+| GPU VRAM | ~52GB / 183GB (28%) |
+| 속도 | ~1.75 s/step |
+| 예상 시간 | ~4.8시간 |
+
+초기 지표 (step ~650): loss 1.952, nll_loss 1.757, rewards/margins 0.002. 안정적 감소 추세.
 
 ---
 
@@ -1520,7 +1545,8 @@ python train/pretrain.py \
 | Phase 1 (3B Pretrain) 완료 | ✅ 완료 | 57K steps, loss 1.466, 2026-03-05 |
 | Phase 2 (SFT) 완료 | ✅ 완료 | 25.5K steps, val_loss 1.8851, 2026-03-06 |
 | SFT 6차원 평가 | ✅ 완료 | 4/6 PASS, ORPO 판정 |
-| **Phase 3 (ORPO)** | **🔄 HP Sweep 중** | **630K pairs, 6-config sweep 4/6 완료** |
+| Phase 3 (ORPO Sweep) | ✅ 완료 | 6-config sweep 완료, best config 선정 |
+| **Phase 3 (ORPO 본 학습)** | **🔄 진행 중** | **lr=1.2e-5, beta=0.25, 2 epochs, ~9,840 steps** |
 | GGUF 변환 + Ollama 배포 | 📋 대기 | Phase 4 (ORPO 후) |
 
 ### 중기 (2026년 2분기)
@@ -1749,13 +1775,13 @@ Phase 1 프리트레인은 57,000 steps, loss 1.466으로 완료됐다. Phase 2 
 
 **아쉬운 소식**: greedy 반복률 72.97%. SFT만으로는 반복 문제가 해결되지 않았다. 오히려 악화되었다 (Base 60.99% → SFT 72.97%). 하지만 `rep_penalty=1.2`만 적용하면 반복률 0%가 달성된다. 모델은 반복하지 않는 능력을 가지고 있다. 다만 그것을 "기본 행동"으로 학습하지 못했을 뿐이다.
 
-**현재**: Phase 3 ORPO HP sweep이 진행 중이다. TRL 0.29.0의 NaN 버그와 싸워 이겼고, 체크포인트 QKV 변환 버그도 잡았다. 683K preference pairs에서 필터링 후 ~630K pairs로 6개 하이퍼파라미터 조합을 200 steps씩 테스트하고 있다. 4/6 config 완료, eval_loss 기준 최적 후보가 나오면 본 학습에 돌입한다.
+**현재**: Phase 3 ORPO 본 학습이 진행 중이다. 6-config HP sweep을 모두 완료하고, eval_loss 기준 최적 config (lr=1.2e-5, beta=0.25)를 선정했다. Throughput 벤치마크로 batch_size=4, grad_accum=4 조합이 80.63 samples/s로 최적임을 확인하고, 8×B200 전체 GPU로 본 학습을 시작했다. ~9,840 steps, 예상 ~4.8시간.
 
 > **ORPO가 greedy 반복률을 5% 미만으로 끌어내릴 수 있는가?**
 
-그 답이 나오면, 이 모델은 GGUF로 변환되어 Ollama 위에서 돌아가게 된다. 한국어를 이해하고 말하는 3B 모델, 처음부터 만든 것.
+그 답이 곧 나온다. 학습이 끝나면 6차원 재평가를 수행하고, 통과하면 GGUF로 변환되어 Ollama 위에서 돌아가게 된다. 한국어를 이해하고 말하는 3B 모델, 처음부터 만든 것.
 
 ---
 
-*최종 업데이트: 2026-03-08*
-*현재 상태: Phase 3 ORPO HP Sweep 진행 중 (6-config, 4/6 완료)*
+*최종 업데이트: 2026-03-09*
+*현재 상태: Phase 3 ORPO 본 학습 진행 중 (lr=1.2e-5, beta=0.25, step ~650/9,840)*

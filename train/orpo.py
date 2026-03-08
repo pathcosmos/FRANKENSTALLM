@@ -150,6 +150,22 @@ class ORPOMonitorCallback(TrainerCallback):
         log.info(f"Checkpoint saved at step {state.global_step}")
 
 
+class VRAMMonitorCallback(TrainerCallback):
+    """Measures peak VRAM usage across all GPUs during training."""
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.reset_peak_memory_stats(i)
+            log.info("[VRAM] Peak memory stats reset for all GPUs")
+
+    def on_train_end(self, args, state, control, **kwargs):
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                peak_mb = torch.cuda.max_memory_allocated(i) / (1024**2)
+                log.info(f"[VRAM] GPU {i} peak: {peak_mb:.0f} MiB")
+
+
 def load_hf_preference_dataset(dataset_name: str, token: str | None = None) -> Dataset:
     """Load and normalize a HuggingFace preference dataset to {prompt, chosen, rejected}."""
     ds = load_dataset(dataset_name, split="train", token=token)
@@ -228,6 +244,10 @@ def main():
                         help="Number of dataloader worker processes")
     parser.add_argument("--no_load_best", action="store_true", default=False,
                         help="Disable load_best_model_at_end (for sweep/quick tests)")
+    parser.add_argument("--max_samples", type=int, default=0,
+                        help="Limit dataset size (0=use all, >0=subset for benchmarking)")
+    parser.add_argument("--skip_filter", action="store_true", default=False,
+                        help="Skip NaN-prevention filter (for benchmarking only)")
     args = parser.parse_args()
 
     # Override CLI defaults with YAML config values
@@ -313,6 +333,12 @@ def main():
         send_telegram_safe(f"[ORPO FATAL] Data load failed: {e}")
         raise
 
+    # Subset for benchmarking (skip tokenization bottleneck)
+    if args.max_samples > 0 and len(dataset) > args.max_samples:
+        dataset = dataset.select(range(args.max_samples))
+        if is_main:
+            log.info(f"[BENCH] Dataset subset: {args.max_samples:,} samples")
+
     if is_main:
         log.info(f"Dataset loaded: {len(dataset)} pairs in {time.time()-t0:.1f}s")
         # Data quality check
@@ -338,34 +364,38 @@ def main():
     # Also catches TRL truncation bug: tokenize_row uses longer_response_length = max(chosen_len, rejected_len)
     # and truncates BOTH responses to [:max_length - longer_response_length]. When longer >= max_length,
     # the shorter response becomes EMPTY → NaN.
-    pre_filter = len(dataset)
-    def _has_response_room(example):
-        prompt_tok_len = len(tokenizer.encode(example["prompt"], add_special_tokens=False))
-        chosen_tok_len = len(tokenizer.encode(example["chosen"], add_special_tokens=False))
-        rejected_tok_len = len(tokenizer.encode(example["rejected"], add_special_tokens=False))
+    if args.skip_filter:
+        if is_main:
+            log.info("[BENCH] Skipping NaN-prevention filter (--skip_filter)")
+    else:
+        pre_filter = len(dataset)
+        def _has_response_room(example):
+            prompt_tok_len = len(tokenizer.encode(example["prompt"], add_special_tokens=False))
+            chosen_tok_len = len(tokenizer.encode(example["chosen"], add_special_tokens=False))
+            rejected_tok_len = len(tokenizer.encode(example["rejected"], add_special_tokens=False))
 
-        # 1. Prompt must leave room for at least 16 response tokens
-        if prompt_tok_len + 16 > args.max_length:
-            return False
+            # 1. Prompt must leave room for at least 16 response tokens
+            if prompt_tok_len + 16 > args.max_length:
+                return False
 
-        # 2. Each response independently must fit with prompt
-        # (TRL adds BOS/EOS, so use +2 margin)
-        if prompt_tok_len + chosen_tok_len + 2 > args.max_length * 2:
-            return False  # extremely long, will cause issues
-        if prompt_tok_len + rejected_tok_len + 2 > args.max_length * 2:
-            return False
+            # 2. Each response independently must fit with prompt
+            # (TRL adds BOS/EOS, so use +2 margin)
+            if prompt_tok_len + chosen_tok_len + 2 > args.max_length * 2:
+                return False  # extremely long, will cause issues
+            if prompt_tok_len + rejected_tok_len + 2 > args.max_length * 2:
+                return False
 
-        # 3. The longer response must not exceed max_length alone
-        # (TRL bug: both responses truncated by max(chosen_len, rejected_len))
-        longer = max(chosen_tok_len, rejected_tok_len)
-        if longer >= args.max_length:
-            return False
+            # 3. The longer response must not exceed max_length alone
+            # (TRL bug: both responses truncated by max(chosen_len, rejected_len))
+            longer = max(chosen_tok_len, rejected_tok_len)
+            if longer >= args.max_length:
+                return False
 
-        return True
-    dataset = dataset.filter(_has_response_room, num_proc=min(args.dataset_num_proc, 32) if is_main else 1)
-    if is_main:
-        log.info(f"Filtered: {pre_filter:,} -> {len(dataset):,} "
-                 f"(removed {pre_filter - len(dataset):,} samples with prompt > max_length-16 or TRL truncation risk)")
+            return True
+        dataset = dataset.filter(_has_response_room, num_proc=min(args.dataset_num_proc, 32) if is_main else 1)
+        if is_main:
+            log.info(f"Filtered: {pre_filter:,} -> {len(dataset):,} "
+                     f"(removed {pre_filter - len(dataset):,} samples with prompt > max_length-16 or TRL truncation risk)")
 
     # Train/eval split
     split = dataset.train_test_split(test_size=args.eval_split_ratio, seed=args.seed)
@@ -447,6 +477,7 @@ def main():
                 EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)
                     if not args.no_load_best else None,
                 monitor,
+                VRAMMonitorCallback(),
             ] if cb is not None],
         )
     except Exception as e:
