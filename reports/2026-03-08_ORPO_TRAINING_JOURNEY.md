@@ -457,20 +457,23 @@ nohup setsid bash scripts/launch_3b_orpo.sh \
 2. **Python SIGHUP handler**: orpo.py 내 signal.signal(SIGHUP, handler) — 무시 처리
 3. **Emergency checkpoint**: 비정상 종료 감지 시 즉시 체크포인트 저장
 
-### 7.3 초기 학습 지표 (step ~650 기준)
+### 7.3 학습 지표 추이
+
+| 지표 | step ~250 | step ~1,160 | 변화 |
+|------|-----------|-------------|------|
+| **loss** | 1.952 | **1.709** | -0.243 |
+| **nll_loss** | 1.757 | **1.593** | -0.164 |
+| **rewards/margins** | 0.002 | **0.330** | +0.328 |
+| **rewards/accuracies** | 0.473 | **0.719** | +0.246 |
+| **log_odds_chosen** | -0.021 | **1.468** | +1.489 |
 
 ```
-loss: 1.952 → 안정적 감소 추세
-nll_loss: 1.757
-rewards/margins: 0.002
-logps/chosen: -1.666
-logps/rejected: -1.674
-epoch: 0.05
-속도: ~1.75 s/step
-GPU utilization: 87~100%
+step 1163/9840 (12%), epoch 0.24, 경과 40분, 남은 ~4.4시간
+속도: ~1.82 s/step
+GPU VRAM: ~52GB/183GB, utilization 91~98%
 ```
 
-학습은 안정적으로 진행 중이며, 특별한 이상 징후 없음.
+**관찰**: rewards/accuracies가 0.47(랜덤 수준) → 0.72로 빠르게 상승. 모델이 chosen/rejected를 구분하는 능력이 강화되고 있다. margins도 0.002 → 0.330으로 급상승하여 ORPO가 preference signal을 효과적으로 학습 중임을 시사한다.
 
 ---
 

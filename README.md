@@ -1434,7 +1434,11 @@ ORPO를 1차 선택, DPO를 Plan B로 설정했다.
 | 속도 | ~1.75 s/step |
 | 예상 시간 | ~4.8시간 |
 
-초기 지표 (step ~650): loss 1.952, nll_loss 1.757, rewards/margins 0.002. 안정적 감소 추세.
+**학습 지표 추이 (step ~1,160 기준)**:
+- loss: 1.952 → **1.709** (-0.243)
+- rewards/accuracies: 0.47 → **0.72** (chosen/rejected 구분 능력 급상승)
+- rewards/margins: 0.002 → **0.330** (preference signal 학습 확인)
+- 속도 ~1.82 s/step, GPU 91~98% utilization, 안정적 진행 중
 
 ---
 
@@ -1784,4 +1788,4 @@ Phase 1 프리트레인은 57,000 steps, loss 1.466으로 완료됐다. Phase 2 
 ---
 
 *최종 업데이트: 2026-03-09*
-*현재 상태: Phase 3 ORPO 본 학습 진행 중 (lr=1.2e-5, beta=0.25, step ~650/9,840)*
+*현재 상태: Phase 3 ORPO 본 학습 진행 중 (lr=1.2e-5, beta=0.25, step ~1,160/9,840, 12%)*
