@@ -7,9 +7,9 @@
 #   bash scripts/launch_3b_orpo.sh --max_steps 200      # 빠른 테스트
 #   RUN_NAME=my_orpo bash scripts/launch_3b_orpo.sh     # 이름 지정
 #
-# 기반 모델 : outputs/hf_korean_3b_sft  (SFT 완료 모델)
+# 기반 모델 : eval/outputs/hf_3b_sft_best  (SFT v1 best)
 # 데이터    : data/preference/combined_preference.jsonl
-# 출력      : outputs/korean_3b_orpo_v1/
+# 출력      : checkpoints/korean_3b_orpo_v1/
 # 로그      : checkpoints/korean_3b_orpo_v1/train.log
 #
 # 체크포인트 크기 예상:
@@ -21,7 +21,7 @@ set -euo pipefail
 
 # ---- Configurable defaults --------------------------------------------------
 RUN_NAME="${RUN_NAME:-korean_3b_orpo_v1}"
-BASE_MODEL="${BASE_MODEL:-eval/outputs/hf_3b_sft_v2_best}"
+BASE_MODEL="${BASE_MODEL:-eval/outputs/hf_3b_sft_best}"
 DATA_PATH="${DATA_PATH:-data/preference/combined_preference.jsonl}"
 OUTPUT_DIR="checkpoints/${RUN_NAME}"
 CKPT_DIR="checkpoints/${RUN_NAME}"
@@ -32,12 +32,17 @@ MASTER_PORT="${MASTER_PORT:-29502}"
 # ORPO 하이퍼파라미터
 BATCH_SIZE=2
 GRAD_ACCUM=8
-LR=5e-6
-BETA=0.1
-EPOCHS=3
-MAX_LENGTH=2048
-MAX_PROMPT_LENGTH=1024
+LR=8e-6
+BETA=0.25
+EPOCHS=2
+MAX_LENGTH=1536
 WARMUP_RATIO=0.05
+WEIGHT_DECAY=0.01
+EVAL_SPLIT_RATIO=0.05
+EVAL_STEPS=500
+EARLY_STOPPING_PATIENCE=3
+SAVE_TOTAL_LIMIT=5
+LOSS_TYPE=orpo
 SEED=42
 
 EXTRA_ARGS="$@"
@@ -126,7 +131,10 @@ echo "  LR              : ${LR}"
 echo "  Beta (ORPO)     : ${BETA}"
 echo "  Batch           : ${BATCH_SIZE} (local) × ${NPROC} GPU × ${GRAD_ACCUM} accum = ${EFF_BATCH}"
 echo "  Max length      : ${MAX_LENGTH}"
-echo "  Max prompt len  : ${MAX_PROMPT_LENGTH}"
+echo "  Loss type       : ${LOSS_TYPE}"
+echo "  Weight decay    : ${WEIGHT_DECAY}"
+echo "  Eval steps      : ${EVAL_STEPS}"
+echo "  Early stop      : patience=${EARLY_STOPPING_PATIENCE}"
 echo "  Started         : $(date)"
 echo "=================================================================="
 
@@ -143,7 +151,12 @@ torchrun \
     --batch_size ${BATCH_SIZE} \
     --gradient_accumulation_steps ${GRAD_ACCUM} \
     --max_length ${MAX_LENGTH} \
-    --max_prompt_length ${MAX_PROMPT_LENGTH} \
+    --loss_type ${LOSS_TYPE} \
+    --weight_decay ${WEIGHT_DECAY} \
+    --eval_split_ratio ${EVAL_SPLIT_RATIO} \
+    --eval_steps ${EVAL_STEPS} \
+    --early_stopping_patience ${EARLY_STOPPING_PATIENCE} \
+    --save_total_limit ${SAVE_TOTAL_LIMIT} \
     ${EXTRA_ARGS} \
     2>&1 | tee "${LOG_FILE}" \
          | grep -v "UserWarning" \

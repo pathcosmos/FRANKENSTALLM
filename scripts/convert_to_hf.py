@@ -57,16 +57,38 @@ def remap_weights(
             src_state_dict[f"{pfx}.attn_norm.weight"].float()
         )
 
-        # Attention projections (te.Linear or nn.Linear — same key names)
-        for src_name, dst_name in [
-            ("q_proj", "self_attn.q_proj"),
-            ("k_proj", "self_attn.k_proj"),
-            ("v_proj", "self_attn.v_proj"),
-            ("out_proj", "self_attn.o_proj"),
-        ]:
-            w_key = f"{pfx}.attn.{src_name}.weight"
-            if w_key in src_state_dict:
-                dst[f"{hpfx}.{dst_name}.weight"] = src_state_dict[w_key].float()
+        # Attention projections
+        # Handle fused QKV (te.Linear with qkv_proj) vs separate q/k/v
+        qkv_key = f"{pfx}.attn.qkv_proj.weight"
+        if qkv_key in src_state_dict:
+            # Fused QKV: [Q_dim + K_dim + V_dim, d_model]
+            # GQA: Q = n_heads * head_dim, K = V = n_kv_heads * head_dim
+            qkv = src_state_dict[qkv_key].float()
+            head_dim = config.d_model // config.n_heads
+            q_dim = config.n_heads * head_dim      # e.g. 24 * 128 = 3072
+            k_dim = config.n_kv_heads * head_dim    # e.g. 8 * 128 = 1024
+            v_dim = config.n_kv_heads * head_dim    # e.g. 8 * 128 = 1024
+            assert qkv.shape[0] == q_dim + k_dim + v_dim, (
+                f"QKV shape mismatch: {qkv.shape[0]} != {q_dim}+{k_dim}+{v_dim}"
+            )
+            dst[f"{hpfx}.self_attn.q_proj.weight"] = qkv[:q_dim]
+            dst[f"{hpfx}.self_attn.k_proj.weight"] = qkv[q_dim:q_dim + k_dim]
+            dst[f"{hpfx}.self_attn.v_proj.weight"] = qkv[q_dim + k_dim:]
+        else:
+            # Separate q/k/v projections
+            for src_name, dst_name in [
+                ("q_proj", "self_attn.q_proj"),
+                ("k_proj", "self_attn.k_proj"),
+                ("v_proj", "self_attn.v_proj"),
+            ]:
+                w_key = f"{pfx}.attn.{src_name}.weight"
+                if w_key in src_state_dict:
+                    dst[f"{hpfx}.{dst_name}.weight"] = src_state_dict[w_key].float()
+
+        # Output projection
+        out_key = f"{pfx}.attn.out_proj.weight"
+        if out_key in src_state_dict:
+            dst[f"{hpfx}.self_attn.o_proj.weight"] = src_state_dict[out_key].float()
 
         # FFN — FP8 (te.LayerNormMLP) vs BF16 (SwiGLU)
         if is_fp8 and f"{pfx}.ffn.layer_norm_weight" in src_state_dict:

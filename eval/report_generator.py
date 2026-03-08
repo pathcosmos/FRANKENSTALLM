@@ -1345,16 +1345,29 @@ def generate_comparison_report(
                  f"< {_SFT_TARGETS['ppl_forgetting_max_pct']}% | {'YES' if max_forgetting is not None and max_forgetting < _SFT_TARGETS['ppl_forgetting_max_pct'] else 'NO'} |")
     lines.append("")
 
-    # Final recommendation
+    # Final recommendation — use ORPO quantitative score for decision
     lines.append("### 권고\n")
-    if rep_rate is not None and rep_rate < _SFT_TARGETS["greedy_3gram_rep_max"] and kobest_avg is not None and kobest_avg > _SFT_TARGETS["kobest_avg_min"] and max_forgetting is not None and max_forgetting < _SFT_TARGETS["ppl_forgetting_max_pct"]:
+    orpo_result = _compute_orpo_score(sft_p1, sft_zero, base_p1_norm, base_zero)
+    orpo_score = orpo_result["total_score"]
+    orpo_decision = orpo_result["decision"]
+
+    all_core_pass = (
+        rep_rate is not None and rep_rate < _SFT_TARGETS["greedy_3gram_rep_max"]
+        and kobest_avg is not None and kobest_avg > _SFT_TARGETS["kobest_avg_min"]
+        and max_forgetting is not None and max_forgetting < _SFT_TARGETS["ppl_forgetting_max_pct"]
+    )
+
+    if all_core_pass:
         lines.append("**모든 핵심 조건 충족 → Phase 4: GGUF 변환 + Ollama 배포 진행**\n")
-    elif (rep_rate is not None and rep_rate < _SFT_TARGETS["greedy_3gram_rep_max"] * 3) or (kobest_avg is not None and kobest_avg > _SFT_TARGETS["kobest_avg_min"] * 0.82):
-        lines.append("**부분 달성 → Phase 3: ORPO 학습 진행** (795K preference pairs 활용)\n")
+    elif orpo_decision == "ORPO":
+        lines.append(f"**ORPO 판정 스코어 {orpo_score:.1f}/100 → Phase 3: ORPO 학습 진행** (795K preference pairs 활용)\n")
         lines.append("ORPO 학습 시 주안점:")
-        lines.append("- 반복률 추가 감소")
+        lines.append("- Greedy 반복률 감소 (현재 72.97% → 목표 <5%)")
+        lines.append("- EOS 종료율 개선 (현재 60% → 목표 >90%)")
         lines.append("- 벤치마크 점수 유지/향상")
-        lines.append("- EOS 종료율 개선")
+        lines.append("- 지식 보존 유지 (현재 forgetting 0.9%)")
+    elif orpo_decision == "SKIP_ORPO":
+        lines.append("**ORPO 불필요 → Phase 4: GGUF 변환 + Ollama 배포 진행**\n")
     else:
         lines.append("**핵심 조건 미달 → SFT 재시도**\n")
         lines.append("재시도 시 검토 사항:")

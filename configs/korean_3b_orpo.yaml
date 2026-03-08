@@ -1,48 +1,49 @@
-# Korean 3B ORPO Configuration
+# Korean 3B ORPO Configuration (Phase 3)
 #
-# Base model: SFT v2 best checkpoint (HF format으로 변환 후 사용)
-# 목표: Greedy 반복률 73%→15% 이하, EOS 종료율 0%→90%+
+# Base model: SFT v1 best checkpoint (HF format)
+# 목표: Greedy 반복률 73%→30% 이하, EOS 종료율 0%→80%+
 #
 # 실행:
-#   1) HF 변환: python scripts/convert_to_hf.py --checkpoint checkpoints/korean_3b_sft_v2/checkpoint-best --output eval/outputs/hf_3b_sft_v2_best
-#   2) Preference 데이터 준비: python data/prepare_preference_combined.py
-#   3) ORPO 학습:
-#      python train/orpo.py \
-#        --model_path eval/outputs/hf_3b_sft_v2_best \
-#        --custom_data_path data/preference/combined_preference.jsonl \
-#        --output_dir checkpoints/korean_3b_orpo \
-#        --config configs/korean_3b_orpo.yaml
+#   bash scripts/launch_3b_orpo.sh                  # 본 학습
+#   bash scripts/launch_3b_orpo.sh --max_steps 200  # 퀵 테스트
 #
 # [설계 근거]
-#   - beta=0.1: ORPO 논문 권장값, odds ratio loss 가중치
-#   - lr=5e-6: SFT lr(5e-5)의 1/10 — preference 학습은 미세 조정이므로 보수적
-#   - epochs=3: 한국어 preference 데이터 규모(~수십만) 기준 적정
-#   - max_length=2048: 3B 모델 + 8GPU VRAM 여유 충분 (chosen+rejected 포함)
+#   - beta=0.25: 반복률 73%는 극단적 → 강한 OR loss 필요 (기존 0.1에서 상향)
+#   - lr=8e-6: 3B는 7B보다 용량 작아 약간 높은 lr 적절
+#   - epochs=2: 683K 규모에 3 epoch은 과적합 위험
+#   - max_length=1536: P95=880 tokens, 99%+ 커버 + VRAM 25% 절약
 
-# ORPO training hyperparameters
-model_path: eval/outputs/hf_3b_sft_v2_best
+# Model
+model_path: eval/outputs/hf_3b_sft_best
 output_dir: checkpoints/korean_3b_orpo
 
 # Training
-epochs: 3
-lr: 5.0e-6
-beta: 0.1
-batch_size: 2
-gradient_accumulation_steps: 8
-max_length: 2048
-max_prompt_length: 1024
+epochs: 2
+lr: 8.0e-6
+beta: 0.25
+batch_size: 4
+gradient_accumulation_steps: 4
+max_length: 1536
 bf16: true
+weight_decay: 0.01
+seed: 42
 
 # Scheduler
 lr_scheduler_type: cosine
-warmup_ratio: 0.1
+warmup_ratio: 0.05
+
+# Evaluation & Early Stopping
+eval_split_ratio: 0.05
+eval_steps: 500
+early_stopping_patience: 3
 
 # Logging & checkpointing
 logging_steps: 10
 save_steps: 500
-save_total_limit: 3
+save_total_limit: 5
 gradient_checkpointing: true
-report_to: tensorboard
+report_to: none
 
 # Data
 custom_data_path: data/preference/combined_preference.jsonl
+dataset_num_proc: 64
