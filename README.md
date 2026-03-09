@@ -1,16 +1,17 @@
 # FRANKENSTALLM
 
-![Phase 3](https://img.shields.io/badge/Phase_3_ORPO-본_학습_중-blue)
+![Phase 4](https://img.shields.io/badge/Phase_4-배포_완료-brightgreen)
 ![Model](https://img.shields.io/badge/Model-3B_Korean_LLM-green)
 ![GPU](https://img.shields.io/badge/GPU-8×_NVIDIA_B200-76b900)
 ![FP8](https://img.shields.io/badge/Precision-MXFP8-orange)
-![SFT](https://img.shields.io/badge/SFT-완료_val__loss_1.8851-success)
-![Status](https://img.shields.io/badge/Status-ORPO_Full_Training-ff9900)
+![ORPO](https://img.shields.io/badge/ORPO-완료_eval__loss_1.625-success)
+![HuggingFace](https://img.shields.io/badge/🤗_HuggingFace-배포_완료-ff9900)
 
 > **한국어 3B LLM을 8× NVIDIA B200 위에서 처음부터 직접 만든다.**
 > Frankenstein처럼 조각을 이어 붙이고, 철강처럼 단단하게 단련한다.
 
-GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM)
+GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM)  
+🤗 HuggingFace: [`pathcosmos/frankenstallm`](https://huggingface.co/pathcosmos/frankenstallm) — **모델 배포 중 (GGUF + safetensors)**
 
 ---
 
@@ -42,6 +43,10 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
     - [11.4 코드 개선 사항](#114-코드-개선-사항)
     - [11.5 ORPO 진행 판정](#115-orpo-진행-판정)
 12. [Phase 3 — ORPO (선호도 정렬)](#12-phase-3--orpo-선호도-정렬)
+20. [HuggingFace 배포 현황](#20-huggingface-배포-현황)
+21. [Ollama 사용법 — 상세 설명 및 주의사항](#21-ollama-사용법--상세-설명-및-주의사항)
+22. [모델 성능 비교](#22-모델-성능-비교--base--sft--orpo--ollama)
+23. [재현 가이드 — 전 단계 설정 상세](#23-재현-가이드--전-단계-설정-상세)
     - [12.1 ORPO 선택 배경](#121-orpo-선택-배경)
     - [12.2 데이터](#122-데이터)
     - [12.3 HP Sweep 설계](#123-hp-sweep-설계-6-config)
@@ -88,8 +93,8 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
 | Phase 2: SFT | ✅ 완료 | 25,500 steps (early stop), val_loss 1.8851, ~15.5시간 |
 | Phase 2.5: SFT 평가 | ✅ 완료 | 6차원 평가 4/6 PASS, ORPO 진행 결정 |
 | Phase 3: ORPO Sweep | ✅ 완료 | 6-config sweep 완료, best: lr=1.2e-5, beta=0.25 |
-| **Phase 3: ORPO 본 학습** | **🔄 진행 중** | **630K pairs, 2 epochs, ~9,840 steps, ~4.8시간** |
-| Phase 4: 배포 | 📋 대기 | GGUF 변환 → Ollama 서빙 |
+| **Phase 3: ORPO 본 학습** | **✅ 완료** | **9,997 steps 조기수렴, eval_loss 1.625, pref_acc 76.02%, 7/10 PASS** |
+| **Phase 4: GGUF 변환·배포** | **✅ 완료** | **byte-fallback 수정, v1/v2 각 3종 양자화, HuggingFace + Ollama 배포** |
 
 ### Phase 2 (SFT) 최종 결과
 
@@ -1821,29 +1826,360 @@ FRANKENSTALLM Phase 1 실측:
 
 ---
 
+## 20. HuggingFace 배포 현황
+
+> **배포 URL**: https://huggingface.co/pathcosmos/frankenstallm
+
+### 모델 파일 목록
+
+| 파일 | 크기 | 설명 |
+|------|------|------|
+| `model.safetensors` | 4.76GB | v2 ORPO 베스트 (byte-fallback 수정) — Transformers 직접 로드용 |
+| `gguf/frankenstallm-3b-v2-Q4_K_M.gguf` | 757MB | **Ollama 권장** |
+| `gguf/frankenstallm-3b-v2-Q8_0.gguf` | 1.2GB | 고품질 |
+| `gguf/frankenstallm-3b-v2-f16.gguf` | 2.3GB | 최고품질 |
+| `gguf/frankenstallm-3b-Q4_K_M.gguf` | 1.9GB | v1 Q4_K_M |
+| `gguf/frankenstallm-3b-Q8_0.gguf` | 3.2GB | v1 Q8_0 |
+| `gguf/frankenstallm-3b-f16.gguf` | 6.0GB | v1 f16 |
+
+각 GGUF 파일에 대응하는 `Modelfile.*` (sampling config 포함)이 함께 제공됩니다.
+
+---
+
+## 21. Ollama 사용법 — 상세 설명 및 주의사항
+
+### 빠른 시작 (권장 방법)
+
+```bash
+# 1. GGUF + Modelfile 다운로드
+huggingface-cli download pathcosmos/frankenstallm   gguf/frankenstallm-3b-v2-Q4_K_M.gguf   gguf/Modelfile.3b-v2-Q4_K_M   --local-dir ./frankenstallm
+
+# 2. Modelfile의 FROM 경로 수정
+# FROM ./outputs/gguf/frankenstallm-3b-v2-Q4_K_M.gguf
+# → FROM ./frankenstallm/gguf/frankenstallm-3b-v2-Q4_K_M.gguf
+
+# 3. Ollama 모델 등록
+ollama create frankenstallm-3b-v2 -f ./frankenstallm/gguf/Modelfile.3b-v2-Q4_K_M
+
+# 4. 실행
+ollama run frankenstallm-3b-v2
+```
+
+### 검증된 샘플링 파라미터
+
+| 파라미터 | 권장값 | 설명 |
+|---------|--------|------|
+| `temperature` | **0.7** | 낮을수록 반복, 높을수록 무작위. 0.7이 한국어 품질 최적 |
+| `repeat_penalty` | **1.2** | **필수** — 이 값 없이는 greedy 시 30.89% 반복 발생 |
+| `top_p` | **0.9** | nucleus sampling, 0.9 이상 권장 |
+| `top_k` | **50** | 상위 50개 토큰 후보 |
+| `num_predict` | **512** | 최대 생성 토큰 수 |
+| `num_ctx` | **4096** | 컨텍스트 윈도우 (최대 4096) |
+
+### ⚠️ 주의사항
+
+**1. repeat_penalty는 반드시 설정하세요**
+```
+ORPO 학습 후에도 greedy(temp=0) 시 30.89% 3-gram 반복률이 남아 있습니다.
+repeat_penalty=1.2 설정 시 반복률 0%로 완전 억제됩니다.
+Modelfile에 이미 설정되어 있으므로, Modelfile을 사용하면 자동 적용됩니다.
+```
+
+**2. temperature=0 (greedy) 사용 주의**
+```
+greedy 디코딩은 반복 억제 없이 30.89% 3-gram 반복이 발생합니다.
+반드시 temperature >= 0.5 이상 + repeat_penalty >= 1.1 이상을 함께 사용하세요.
+```
+
+**3. num_ctx 초과 시 성능 저하**
+```
+학습 시 max_position_embeddings=4096이었습니다.
+4096 토큰을 초과하는 컨텍스트를 넣으면 성능이 크게 저하됩니다.
+```
+
+**4. 한국어 중심 모델입니다**
+```
+영어 능력: MMLU 42.0%, HellaSwag 27.9% — 영어 태스크에서 기대치를 낮추세요.
+한국어: KoBEST 0-shot 52.75%, korean_nlu 100.0% (Ollama 벤치마크)
+```
+
+**5. v2 vs v1 선택**
+```
+v2 권장: byte-fallback 수정으로 
+ 등 특수문자 포함 입력이 안전합니다.
+v1은 
+ 포함 입력 시 llama.cpp가 크래시할 수 있습니다.
+```
+
+### Transformers로 직접 실행
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+model_id = "pathcosmos/frankenstallm"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    torch_dtype=torch.bfloat16,
+    device_map="auto"
+)
+
+# ⚠️ do_sample=True + repetition_penalty 반드시 설정
+inputs = tokenizer(
+    "한국의 전통 음식 중 김치에 대해 설명해주세요.",
+    return_tensors="pt"
+).to(model.device)
+
+with torch.no_grad():
+    outputs = model.generate(
+        **inputs,
+        do_sample=True,        # ← greedy 사용 시 반복 발생
+        temperature=0.7,       # ← 핵심 파라미터
+        repetition_penalty=1.2, # ← 반드시 설정
+        top_p=0.9,
+        top_k=50,
+        max_new_tokens=512,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+
+print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+```
+
+### API 서빙 (Ollama)
+
+```bash
+# 백그라운드 서버 실행 (기본 포트 11434)
+ollama serve &
+
+# REST API 호출
+curl http://localhost:11434/api/generate -d '{
+  "model": "frankenstallm-3b-v2",
+  "prompt": "한국어로 자기소개를 해줘.",
+  "stream": false,
+  "options": {
+    "temperature": 0.7,
+    "repeat_penalty": 1.2,
+    "top_p": 0.9,
+    "num_predict": 512
+  }
+}'
+```
+
+---
+
+## 22. 모델 성능 비교 — Base / SFT / ORPO / Ollama
+
+### 핵심 지표 3-Way 비교
+
+| 지표 | Base | SFT v2 | ORPO (v2) |
+|------|------|--------|-----------|
+| **greedy 3-gram 반복률** | 60.99% | 72.97% | **30.89%** |
+| **EOS 종료율 (greedy)** | 0% | 60% | 67% |
+| **sampling 반복률** (temp=0.7, rep=1.2) | — | — | **0%** |
+| **KoBEST 0-shot 평균** | ~44% | 43.26%¹ | **52.75%** |
+| **MMLU-KO 0-shot** | 38.8% | 42.0% | — |
+| **Hellaswag EN** | 33.3% | — | 27.9% |
+| **Calibration Top-1** | ~65% | 68.59% | 67.99% |
+| **PPL forgetting** | 0% (기준) | 0.9% | 4.1% |
+| **Preference Accuracy** | — | — | **76.02%** |
+| **Reward Margin** | — | — | **0.6100** |
+
+> ¹ SFT 초기 평가 시 43.26%, 이후 재평가에서 52.75% (평가 환경 차이).
+
+### KoBEST 세부 비교 (0-shot)
+
+| 태스크 | Base | ORPO |
+|--------|------|------|
+| BoolQ | ~48% | 54.3% |
+| COPA | ~52% | 56.2% |
+| WiC | ~49% | 51.8% |
+| SentiNeg | ~44% | 51.4% |
+| HellaSwag-KO | ~38% | 49.9% |
+| **평균** | ~46% | **52.75%** |
+
+### Ollama 벤치마크 (frankenstallm-3b-v2:Q4_K_M, 35 tests)
+
+| 카테고리 | 점수 |
+|----------|------|
+| korean_nlu | **100.0** |
+| knowledge | 75.0 |
+| instruction_following | 66.7 |
+| reasoning | 50.0 |
+| safety | 10.0 |
+| repetition_resistance | 2.2 |
+| **자동 채점 평균** | **46.7** |
+| 평균 TPS | 142.5 tok/s |
+| 평균 TTFT | 16.7 ms |
+
+> repetition_resistance 2.2%는 Ollama 기본 파라미터(sampling 없이 실행)로 측정된 값.  
+> `repeat_penalty=1.2` + `temperature=0.7` 적용 시 **반복률 0%** 달성.
+
+---
+
+## 23. 재현 가이드 — 전 단계 설정 상세
+
+> 이 섹션은 동일 환경에서 재현 시 참고용입니다.
+
+### 환경 설정
+
+```bash
+# NVIDIA 커스텀 PyTorch는 재설치 금지 (B200 최적화 깨짐)
+# 아래 패키지만 추가 설치
+pip install transformers==4.40.0 accelerate peft trl deepspeed \
+            bitsandbytes sentencepiece wandb
+
+# 전체 환경 재현
+pip install -r requirements.txt
+```
+
+**소프트웨어 버전 (실측)**:
+```
+torch          2.10.0a0+b4e4ee81d3.nv25.12
+flash_attn     2.7.4.post1+25.12
+transformers   4.40.x
+datasets       4.4.1
+tokenizers     0.22.1
+huggingface_hub 1.2.3
+trl            (ORPO NaN 버그 패치 적용본 — scripts/trl_patch.py 참고)
+CUDA           13.1 / Driver 580.95.05
+```
+
+### Phase 1 — Pretrain 핵심 하이퍼파라미터
+
+```yaml
+# configs/korean_3b_fp8.yaml 기준
+model:
+  hidden_size: 2048
+  num_hidden_layers: 24
+  num_attention_heads: 16
+  num_key_value_heads: 4
+  intermediate_size: 5632
+  max_position_embeddings: 4096
+  vocab_size: 64000
+
+train:
+  batch_size: 5
+  gradient_accumulation_steps: 8
+  # effective batch = 5 × 8 × 8GPU = 320
+  learning_rate: 1.5e-4
+  min_lr: 1.5e-5          # cosine decay 하한 (max_lr의 10%)
+  warmup_steps: 2000
+  weight_decay: 0.1
+  max_grad_norm: 1.0
+  scheduler: cosine
+  precision: bf16          # FP8 Tensor Core 활용 (B200)
+  total_tokens: ~38.5B
+```
+
+### Phase 2 — SFT v2 핵심 하이퍼파라미터
+
+```yaml
+# configs/korean_3b_sft_v2.yaml 기준
+train:
+  learning_rate: 5.0e-5
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  # effective batch = 4 × 8 × 8GPU = 256
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  lr_scheduler_type: cosine
+  max_steps: 33000          # early stop at 25,500 (patience=5)
+  early_stopping_patience: 5
+  fp16: false
+  bf16: true
+
+data:
+  total_samples: 2439397    # train
+  val_samples: 49801
+  num_sources: 24
+  total_size_gb: 7.48
+  mixing: "70% instruction / 30% general"
+```
+
+### Phase 3 — ORPO 핵심 하이퍼파라미터
+
+```yaml
+# configs/korean_3b_orpo.yaml 기준 (본 학습)
+train:
+  beta: 0.25                # ORPO preference weight
+  learning_rate: 1.2e-5    # HP sweep 최적값
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  # effective batch = 4 × 4 × 8GPU = 128
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  lr_scheduler_type: cosine
+  max_length: 1536          # prompt + response 합산 최대 길이
+  max_prompt_length: 512
+  num_train_epochs: 2       # 실제 ~9,997 steps에서 조기 수렴
+  bf16: true
+  optim: adamw_torch_fused
+
+data:
+  raw_pairs: 683181
+  filtered_pairs: ~630000   # NaN 방지 필터 후
+  eval_split: 0.05          # seed=42
+  eval_pairs: ~31500
+```
+
+### Phase 4 — GGUF 변환 파이프라인
+
+```bash
+# Step 1: byte-fallback 토크나이저 수정
+python scripts/fix_tokenizer_byte_fallback.py \
+  --input  outputs/hf_checkpoint-best \
+  --output outputs/hf_checkpoint-best-fixed
+
+# Step 2: f16 GGUF 변환 (llama.cpp)
+python outputs/llama.cpp/convert_hf_to_gguf.py \
+  outputs/hf_checkpoint-best-fixed \
+  --outfile outputs/gguf/frankenstallm-3b-v2-f16.gguf \
+  --outtype f16
+
+# Step 3: 양자화
+QUANTIZE=outputs/llama.cpp/build/bin/llama-quantize
+$QUANTIZE outputs/gguf/frankenstallm-3b-v2-f16.gguf \
+          outputs/gguf/frankenstallm-3b-v2-Q4_K_M.gguf Q4_K_M
+$QUANTIZE outputs/gguf/frankenstallm-3b-v2-f16.gguf \
+          outputs/gguf/frankenstallm-3b-v2-Q8_0.gguf Q8_0
+
+# Step 4: Ollama 등록
+ollama create frankenstallm-3b-v2:Q4_K_M -f Modelfile.3b-v2-Q4
+ollama create frankenstallm-3b-v2:Q8_0   -f Modelfile.3b-v2-Q8
+ollama create frankenstallm-3b-v2:f16    -f Modelfile.3b-v2-f16
+```
+
+### 토크나이저 재현
+
+```
+학습 방식: SentencePiece Unigram
+vocab_size: 64,000 (원본) → 64,256 (byte-fallback 수정 후)
+학습 스크립트: tokenizer/train_sp_tokenizer.py
+학습 데이터: C4 Korean + 나무위키 + Wikipedia Korean 혼합
+byte_fallback: True (v2에서 추가)
+추가 토큰: <0x00> ~ <0xFF> 256개
+```
+
+---
+
 ## 마치며
 
 이 프로젝트의 모토는 하나다:
 
 > **"망하는 것도 기록한다."**
 
-SFT v1의 loss=0.0 실패, torch.compile이 효과 없었던 것, 18% 반복률의 좌절 — 이 모든 것이 기록에 남아 있다. 그리고 이제 Phase 3 ORPO에서도 그 전통은 이어진다. **5번의 실패** — NCCL timeout, config 충돌, QKV 변환 버그, 포트 충돌, TRL NaN 버그 — 를 거쳐 마침내 6-config HP sweep이 돌아가고 있다.
+SFT v1의 loss=0.0 실패, torch.compile이 효과 없었던 것, 18% 반복률의 좌절 — 이 모든 것이 기록에 남아 있다. Phase 3 ORPO에서도 **5번의 실패** — NCCL timeout, config 충돌, QKV 변환 버그, 포트 충돌, TRL NaN 버그 — 를 거쳐 마침내 완주했다.
 
-Frankenstein이 조각들을 이어 붙여 생명을 만들었듯, 우리도 다양한 소스의 데이터와 기술을 이어 붙여 한국어를 이해하고 말하는 모델을 만들어가고 있다. 아직 완성되지 않았지만, 그 과정 자체가 이 프로젝트의 가치다.
+Phase 1 프리트레인은 57,000 steps, loss 1.466으로 완료됐다. Phase 2 SFT는 25,500 steps에서 early stopping (val_loss 1.8851). Phase 3 ORPO는 9,997 steps에서 조기 수렴 — eval_loss 1.625, Preference Accuracy 76.02%. Phase 4로 GGUF 변환 후 HuggingFace와 Ollama에 배포 완료.
 
-Phase 1 프리트레인은 57,000 steps, loss 1.466으로 완료됐다. Phase 2 SFT는 25,500 steps에서 early stopping (val_loss 1.8851). 6차원 종합 평가에서 4/6을 통과했다.
+**결국 해냈다**: greedy 반복률 72.97% → 30.89% (ORPO), sampling+rep_penalty 적용 시 0%. TPS 142.5, TTFT 16.7ms. 한국어를 이해하고 말하는 3B 모델, 처음부터 만든 것.
 
-**좋은 소식**: 지식 보존이 거의 완벽하다 (forgetting 0.9%). SFT가 base 모델의 지식을 파괴하지 않았다. EOS 종료율은 0%에서 60%로 올라갔다. MMLU-KO도 +3.2pp 개선되었다.
+Frankenstein이 조각들을 이어 붙여 생명을 만들었듯, FRANKENSTALLM도 그렇게 만들어졌다.
 
-**아쉬운 소식**: greedy 반복률 72.97%. SFT만으로는 반복 문제가 해결되지 않았다. 오히려 악화되었다 (Base 60.99% → SFT 72.97%). 하지만 `rep_penalty=1.2`만 적용하면 반복률 0%가 달성된다. 모델은 반복하지 않는 능력을 가지고 있다. 다만 그것을 "기본 행동"으로 학습하지 못했을 뿐이다.
-
-**현재**: Phase 3 ORPO 본 학습이 진행 중이다. 6-config HP sweep을 모두 완료하고, eval_loss 기준 최적 config (lr=1.2e-5, beta=0.25)를 선정했다. Throughput 벤치마크로 batch_size=4, grad_accum=4 조합이 80.63 samples/s로 최적임을 확인하고, 8×B200 전체 GPU로 본 학습을 시작했다. ~9,840 steps, 예상 ~4.8시간. 학습 완료 시 watchdog이 자동으로 10차원 종합 평가(Base vs SFT vs ORPO 3-way 비교)를 실행한다.
-
-> **ORPO가 greedy 반복률을 5% 미만으로 끌어내릴 수 있는가?**
-
-그 답이 곧 나온다. 학습이 끝나면 6차원 재평가를 수행하고, 통과하면 GGUF로 변환되어 Ollama 위에서 돌아가게 된다. 한국어를 이해하고 말하는 3B 모델, 처음부터 만든 것.
+**🤗 모델 다운로드**: https://huggingface.co/pathcosmos/frankenstallm
 
 ---
 
-*최종 업데이트: 2026-03-09*
-*현재 상태: Phase 3 ORPO 본 학습 진행 중 (lr=1.2e-5, beta=0.25, step ~1,660/9,840, 17%) — 학습 완료 시 10차원 종합 평가 자동 실행 대기*
+*최종 업데이트: 2026-03-10*
+*현재 상태: **전 단계 완료** — Phase 1 Pretrain ✅ | Phase 2 SFT ✅ | Phase 3 ORPO ✅ | Phase 4 배포 ✅*
