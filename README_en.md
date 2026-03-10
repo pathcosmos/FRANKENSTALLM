@@ -1929,7 +1929,7 @@ model = AutoModelForCausalLM.from_pretrained(
 
 # WARNING: do_sample=True + repetition_penalty must be set
 inputs = tokenizer(
-    "한국의 전통 음식 중 김치에 대해 설명해주세요.",
+    "한국의 전통 음식 중 김치에 대해 설명해주세요.",  # "Explain about kimchi among Korean traditional foods."
     return_tensors="pt"
 ).to(model.device)
 
@@ -1957,7 +1957,7 @@ ollama serve &
 # REST API call
 curl http://localhost:11434/api/generate -d '{
   "model": "frankenstallm-3b-v2",
-  "prompt": "한국어로 자기소개를 해줘.",
+  "prompt": "한국어로 자기소개를 해줘.",  // "Introduce yourself in Korean."
   "stream": false,
   "options": {
     "temperature": 0.7,
