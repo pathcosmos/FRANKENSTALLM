@@ -1,0 +1,86 @@
+{
+  "metadata": {
+    "date": "2026-03-09 14:28:08",
+    "models": [
+      "frankenstallm-3b"
+    ],
+    "total_tests": 5,
+    "categories": [
+      "korean_nlu"
+    ]
+  },
+  "results": {
+    "frankenstallm-3b": {
+      "korean_nlu": {
+        "nlu_01": {
+          "id": "nlu_01",
+          "category": "korean_nlu",
+          "prompt": "다음 글을 읽고 질문에 답하세요.\n\n'서울시는 2024년부터 모든 공공건물에 태양광 패널 설치를 의무화한다고 발표했다. 이는 2030년 탄소중립 목표 달성을 위한 핵심 정책이다. 환경부는 이 정책으로 연간 50만 톤의 탄소 배출을 줄일 수 있을 것으로 전망했다.'\n\n질문: 이 정책의 주된 목적은 무엇인가?",
+          "eval_type": "automated_keyword",
+          "response": "",
+          "timing": {
+            "first_token_ms": 0,
+            "tokens_per_sec": 0,
+            "total_time_sec": 0,
+            "eval_count": 0,
+            "prompt_eval_count": 0
+          },
+          "auto_score": 0.0,
+          "error": "Remote end closed connection without response"
+        },
+        "nlu_02": {
+          "id": "nlu_02",
+          "category": "korean_nlu",
+          "prompt": "다음 리뷰의 감정을 '긍정', '부정', '중립' 중 하나로 분류하세요.\n\n리뷰: '배송은 빨랐는데 제품 품질이 기대에 미치지 못해서 실망했습니다. 가격 대비 성능이 너무 떨어지네요.'\n\n감정:",
+          "eval_type": "automated_keyword",
+          "response": "",
+          "timing": {
+            "first_token_ms": 0,
+            "tokens_per_sec": 0,
+            "total_time_sec": 0,
+            "eval_count": 0,
+            "prompt_eval_count": 0
+          },
+          "auto_score": 0.0,
+          "error": "Remote end closed connection without response"
+        },
+        "nlu_03": {
+          "id": "nlu_03",
+          "category": "korean_nlu",
+          "prompt": "다음 대화에서 화자의 의도를 파악하세요.\n\nA: '이번 주말에 시간 있어?'\nB: '글쎄, 좀 바쁠 것 같은데...'\n\nB의 실제 의도는?",
+          "eval_type": "manual",
+          "response": "",
+          "timing": {
+            "first_token_ms": 0,
+            "tokens_per_sec": 0,
+            "total_time_sec": 0,
+            "eval_count": 0,
+            "prompt_eval_count": 0
+          },
+          "auto_score": 0.0,
+          "error": "Remote end closed connection without response"
+        }
+      }
+    }
+  },
+  "summary": {
+    "frankenstallm-3b": {
+      "categories": {
+        "korean_nlu": {
+          "auto_avg": 0.0,
+          "n_auto": 3,
+          "n_manual": 0
+        }
+      },
+      "latency": {
+        "avg_first_token_ms": 0,
+        "p50_first_token_ms": 0.0,
+        "p95_first_token_ms": 0.0,
+        "avg_tps": 0,
+        "p50_tps": 0.0,
+        "p95_tps": 0.0
+      },
+      "overall_auto_avg": 0.0
+    }
+  }
+}

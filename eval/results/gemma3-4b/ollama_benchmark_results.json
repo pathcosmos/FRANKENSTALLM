@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "date": "2026-03-09 22:51:21",
+    "models": [
+      "gemma3:4b"
+    ],
+    "total_tests": 35,
+    "categories": [
+      "code",
+      "instruction_following",
+      "knowledge",
+      "korean_generation",
+      "korean_nlu",
+      "multilingual",
+      "reasoning",
+      "repetition_resistance",
+      "safety"
+    ]
+  },
+  "results": {},
+  "summary": {}
+}

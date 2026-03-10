@@ -3,6 +3,7 @@ checkpoints/
 data/
 outputs/
 .ollama/
+archive-parts/
 
 # ===== 도구/캐시 설정 =====
 .compile_cache/
