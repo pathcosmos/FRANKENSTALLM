@@ -1,5 +1,7 @@
 # FRANKENSTALLM
 
+> 🌍 [English Version](./README_en.md)
+
 ![Phase 4](https://img.shields.io/badge/Phase_4-배포_완료-brightgreen)
 ![Model](https://img.shields.io/badge/Model-3B_Korean_LLM-green)
 ![GPU](https://img.shields.io/badge/GPU-8×_NVIDIA_B200-76b900)
