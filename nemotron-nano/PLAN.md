@@ -2,7 +2,7 @@
 
 > 작성: 2026-02-25  
 > 참조: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16  
-> HF Token: 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  
+> HF Token: (환경변수 사용, 문서 하드코딩 금지)  
 
 ---
 
@@ -88,7 +88,7 @@
 - [ ] HF 베이스 모델 다운로드 (~60GB)
   ```bash
   huggingface-cli download nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-Base-BF16 \
-    --token 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 \
+    --token "$HF_TOKEN" \
     --local-dir /PROJECT/0325120031_A/ghong/taketimes/llm-bang/nemotron-nano/base_model
   ```
 
