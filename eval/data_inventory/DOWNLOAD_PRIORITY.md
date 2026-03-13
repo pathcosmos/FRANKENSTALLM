@@ -167,5 +167,5 @@ ds = load_dataset('open-web-math/open-web-math', split='train', streaming=True,
 ## 주의사항
 1. CulturaX는 gated(auto) → HuggingFace에서 동의 필요 (이미 다운받은 60GB 활용)
 2. the-stack-dedup도 gated → 승인 필요, RedPajama github로 대체
-3. 다운로드 전 `huggingface-cli login --token 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` 실행
+3. 다운로드 전 `huggingface-cli login --token "$HF_TOKEN"` 실행 (실제 토큰 하드코딩 금지)
 4. 대용량 다운로드 시 `HF_HUB_ENABLE_HF_TRANSFER=1` 환경변수 설정 권장
