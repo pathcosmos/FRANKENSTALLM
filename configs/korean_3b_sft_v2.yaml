@@ -17,7 +17,7 @@
 #     - data mixing: SFT 70% + pretrain 30% (forgetting 방지)
 
 model:
-  vocab_size: 64000
+  vocab_size: 64256          # 64000 + 256 byte-fallback tokens
   d_model: 3072
   n_layers: 28
   n_heads: 24
@@ -50,5 +50,5 @@ train:
   pretrain_data: data/3b_train.bin  # pretrain 데이터 경로
 
 tokenizer:
-  vocab_size: 64000
+  vocab_size: 64256          # 64000 + 256 byte-fallback tokens
   type: sentencepiece_unigram

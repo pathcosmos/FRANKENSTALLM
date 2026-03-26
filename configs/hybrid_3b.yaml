@@ -11,7 +11,7 @@
 #
 # 실행: bash scripts/launch_hybrid_3b.sh
 model:
-  vocab_size: 64000
+  vocab_size: 64256          # 64000 + 256 byte-fallback tokens
   d_model: 3072
   n_layers: 40
   n_heads: 24
@@ -51,5 +51,5 @@ train:
   fp8_format: "MXFP8"
 
 tokenizer:
-  vocab_size: 64000
+  vocab_size: 64256          # 64000 + 256 byte-fallback tokens
   type: sentencepiece_unigram

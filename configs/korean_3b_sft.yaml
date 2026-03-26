@@ -14,7 +14,7 @@
 #   - use_fp8=true: B200 MXFP8 네이티브 가속 유지
 
 model:
-  vocab_size: 64000
+  vocab_size: 64256          # 64000 + 256 byte-fallback tokens
   d_model: 3072
   n_layers: 28
   n_heads: 24
@@ -43,5 +43,5 @@ train:
   neftune_alpha: 5.0     # NEFTune noise injection
 
 tokenizer:
-  vocab_size: 64000
+  vocab_size: 64256          # 64000 + 256 byte-fallback tokens
   type: sentencepiece_unigram
