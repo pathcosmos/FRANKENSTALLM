@@ -3,7 +3,7 @@
 > 🌍 [한국어 버전 (Korean)](./README.md)
 
 ![Phase 4](https://img.shields.io/badge/Phase_4-Deployment_Complete-brightgreen)
-![Model](https://img.shields.io/badge/Model-3B_Korean_LLM-green)
+[![Model](https://img.shields.io/badge/Model-3B_Korean_LLM-green)](https://huggingface.co/pathcosmos/frankenstallm)
 ![GPU](https://img.shields.io/badge/GPU-8×_NVIDIA_B200-76b900)
 ![FP8](https://img.shields.io/badge/Precision-MXFP8-orange)
 ![ORPO](https://img.shields.io/badge/ORPO-Complete_eval__loss_1.625-success)
@@ -1705,7 +1705,7 @@ Applying all these optimizations could push MFU from the current 33.5% to 45~50%
 
 ## Related Projects
 
-### [EVAFRILL-Mo](https://github.com/pathcosmos/EVAFRILL-Mo)
+### [EVAFRILL-Mo](https://github.com/pathcosmos/EVAFRILL-Mo) | [🤗 HuggingFace](https://huggingface.co/pathcosmos/EVAFRILL-Mo-3B)
 
 **Hybrid Mamba-2 + Transformer Language Model** — A sister project of FRANKENSTALLM.
 
