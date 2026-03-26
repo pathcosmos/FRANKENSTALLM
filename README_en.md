@@ -54,7 +54,7 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
     - [12.3 HP Sweep Design](#123-hp-sweep-design-6-config)
     - [12.4 Attempt History](#124-attempt-history--5-failures)
     - [12.5 Sweep Results](#125-sweep-results-in-progress)
-    - [12.7 ORPO Main Training](#127-orpo-main-training-in-progress-2026-03-09)
+    - [12.7 ORPO Production Training (Complete)](#127-orpo-main-training-in-progress-2026-03-09)
     - [12.8 ORPO Comprehensive Evaluation Pipeline](#128-orpo-comprehensive-evaluation-pipeline)
 13. [How to Run](#13-how-to-run)
 14. [Roadmap](#14-roadmap)
@@ -84,7 +84,7 @@ This README is not a presentation of a finished product — it is **a builder's 
 ## 2. Current Status — At a Glance
 
 ```
-As of 2026-03-09
+As of 2026-03-26 (all phases complete)
 ```
 
 | Phase | Status | Details |
@@ -1433,7 +1433,7 @@ Before production training, throughput was measured across batch/grad_accum comb
 | 2 | 8 | 128 | 73.14 samples/s | Previous setting |
 | 8 | 2 | 128 | OOM | |
 
-### 12.7 ORPO Production Training (In Progress, 2026-03-09)
+### 12.7 ORPO Production Training (Complete)
 
 | Parameter | Value |
 |-----------|-------|
@@ -1616,9 +1616,9 @@ python train/pretrain.py \
 | Phase 2 (SFT) complete | ✅ Done | 25.5K steps, val_loss 1.8851, 2026-03-06 |
 | SFT 6-dimensional evaluation | ✅ Done | 4/6 PASS, ORPO decision |
 | Phase 3 (ORPO Sweep) | ✅ Done | 6-config sweep complete, best config selected |
-| **Phase 3 (ORPO Production Training)** | **In Progress** | **lr=1.2e-5, beta=0.25, 2 epochs, ~9,840 steps** |
-| Phase 3.5 (ORPO Comprehensive Eval) | Pending | 10-dimensional eval (6 base + 4 ORPO-specific), 3-way comparison report |
-| GGUF Conversion + Ollama Deployment | Pending | Phase 4 (if ORPO eval passes) |
+| **Phase 3 (ORPO Production Training)** | **✅ Done** | **9,997 steps, eval_loss 1.625, pref_acc 76.02%** |
+| Phase 3.5 (ORPO Comprehensive Eval) | ✅ Done | 7/10 PASS, 3-way comparison complete |
+| GGUF Conversion + Ollama Deployment | ✅ Done | byte-fallback fix, Q4_K_M/Q8_0/f16, HF + Ollama deployed |
 
 ### Mid-term (Q2 2026)
 
@@ -1637,7 +1637,7 @@ python train/pretrain.py \
 | 7B experiment | Requires FSDP strategy |
 | vLLM serving | Inference server based on PagedAttention |
 | Domain-specific fine-tuning | Steel/manufacturing domain |
-| Public release | Upload to HuggingFace Hub |
+| ✅ Public release | Upload to HuggingFace Hub (complete) |
 
 ### Known Unapplied Optimizations
 
