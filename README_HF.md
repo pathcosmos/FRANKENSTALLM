@@ -824,3 +824,16 @@ ollama run frankenstallm
 - **GitHub**: [pathcosmos/FRANKENSTALLM](https://github.com/pathcosmos/FRANKENSTALLM) — Full source code, training scripts, and builder's log
 - **HuggingFace**: [pathcosmos/frankenstallm](https://huggingface.co/pathcosmos/frankenstallm)
 - **Contact**: pathcosmos@gmail.com
+
+---
+
+## Acknowledgment
+
+이 프로젝트는 **과학기술정보통신부**의 **「첨단 GPU 활용 지원 사업」** (과학기술정보통신부 공고 제2025-1068호)을 통해 제공된 GPU 컴퓨팅 자원을 활용하여 수행되었습니다.
+
+This project was conducted using GPU computing resources provided through the **"Advanced GPU Utilization Support Program"** (MSIT Notice No. 2025-1068) by the **Ministry of Science and ICT (MSIT)**, Republic of Korea.
+
+> **국가 AI컴퓨팅자원 지원포털 (National AI Computing Resource Support Portal)**: https://aiinfrahub.kr
+>
+> - 주관 (Organized by): 과학기술정보통신부 (MSIT), 정보통신산업진흥원 (NIPA)
+> - 운영 (Operated by): 한국정보통신진흥협회 (KAIT)

@@ -2251,5 +2251,18 @@ Just as Frankenstein stitched together pieces to create life, FRANKENSTALLM was 
 
 ---
 
-*Last updated: 2026-03-10*
+## Acknowledgment
+
+This project was conducted using GPU computing resources provided through the **"Advanced GPU Utilization Support Program"** (MSIT Notice No. 2025-1068) by the **Ministry of Science and ICT (MSIT)** of the Republic of Korea.
+
+> **National AI Computing Resource Support Portal**: https://aiinfrahub.kr
+>
+> - Organized by: Ministry of Science and ICT (MSIT), National IT Industry Promotion Agency (NIPA)
+> - Operated by: Korea Association of Information & Telecommunication (KAIT)
+
+We are deeply grateful for the national-level AI computing infrastructure support from the Korean government, which made it possible to train a Korean 3B LLM from scratch on 8× NVIDIA B200 GPUs.
+
+---
+
+*Last updated: 2026-03-26*
 *Current status: **All phases complete** — Phase 1 Pretrain | Phase 2 SFT | Phase 3 ORPO | Phase 4 Deployment*
