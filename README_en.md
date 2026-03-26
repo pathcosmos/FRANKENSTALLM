@@ -7,7 +7,7 @@
 ![GPU](https://img.shields.io/badge/GPU-8×_NVIDIA_B200-76b900)
 ![FP8](https://img.shields.io/badge/Precision-MXFP8-orange)
 ![ORPO](https://img.shields.io/badge/ORPO-Complete_eval__loss_1.625-success)
-![HuggingFace](https://img.shields.io/badge/🤗_HuggingFace-Deployed-ff9900)
+[![HuggingFace](https://img.shields.io/badge/🤗_HuggingFace-Deployed-ff9900)](https://huggingface.co/pathcosmos/frankenstallm)
 
 > **Building a Korean 3B LLM from scratch on 8× NVIDIA B200 GPUs.**
 > Stitching pieces together like Frankenstein, forging them as strong as steel.
