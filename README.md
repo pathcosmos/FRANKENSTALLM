@@ -13,7 +13,7 @@
 > Frankenstein처럼 조각을 이어 붙이고, 철강처럼 단단하게 단련한다.
 
 GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM)  
-🤗 HuggingFace: [`pathcosmos/frankenstallm`](https://huggingface.co/pathcosmos/frankenstallm) — **모델 배포 중 (GGUF + safetensors)**
+🤗 HuggingFace: [`pathcosmos/frankenstallm`](https://huggingface.co/pathcosmos/frankenstallm) — **모델 배포 완료 (GGUF + safetensors)**
 
 ---
 
@@ -53,8 +53,8 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
     - [12.2 데이터](#122-데이터)
     - [12.3 HP Sweep 설계](#123-hp-sweep-설계-6-config)
     - [12.4 시도 이력](#124-시도-이력--5번의-실패)
-    - [12.5 스윕 결과](#125-스윕-결과-진행-중)
-    - [12.7 ORPO 본 학습](#127-orpo-본-학습-진행-중-2026-03-09)
+    - [12.5 스윕 결과 (완료)](#125-스윕-결과-진행-중)
+    - [12.7 ORPO 본 학습 (완료)](#127-orpo-본-학습-진행-중-2026-03-09)
     - [12.8 ORPO 종합 평가 파이프라인](#128-orpo-종합-평가-파이프라인)
 13. [실행 방법](#13-실행-방법)
 14. [로드맵](#14-로드맵)
@@ -78,14 +78,14 @@ GitHub: [`pathcosmos/FRANKENSTALLM`](https://github.com/pathcosmos/FRANKENSTALLM
 - **B200 최적화**: NVIDIA B200의 FP8 Tensor Core, NVLink 5.0, FlashAttention-2를 최대한 활용한다. 최신 하드웨어를 최대로 쥐어짜는 과정 자체가 학습이다.
 
 
-이 README는 완성된 결과물의 발표가 아니라, **현재 진행 중인 빌더의 로그**다.
+이 README는 **처음부터 끝까지의 빌더 로그**다. 실패와 성공을 모두 기록했다.
 
 ---
 
 ## 2. 현재 상태 — 한눈에 보기
 
 ```
-2026-03-09 기준
+2026-03-26 기준 (전 단계 완료)
 ```
 
 | 단계 | 상태 | 세부 내용 |
@@ -1431,7 +1431,7 @@ ORPO를 1차 선택, DPO를 Plan B로 설정했다.
 | 2 | 8 | 128 | 73.14 samples/s | 기존 설정 |
 | 8 | 2 | 128 | OOM | |
 
-### 12.7 ORPO 본 학습 (진행 중, 2026-03-09)
+### 12.7 ORPO 본 학습 (완료)
 
 | 파라미터 | 값 |
 |---------|-----|
@@ -1614,9 +1614,9 @@ python train/pretrain.py \
 | Phase 2 (SFT) 완료 | ✅ 완료 | 25.5K steps, val_loss 1.8851, 2026-03-06 |
 | SFT 6차원 평가 | ✅ 완료 | 4/6 PASS, ORPO 판정 |
 | Phase 3 (ORPO Sweep) | ✅ 완료 | 6-config sweep 완료, best config 선정 |
-| **Phase 3 (ORPO 본 학습)** | **🔄 진행 중** | **lr=1.2e-5, beta=0.25, 2 epochs, ~9,840 steps** |
-| Phase 3.5 (ORPO 종합 평가) | 📋 대기 | 10차원 평가 (6 기본 + 4 ORPO 고유), 3-way 비교 보고서 |
-| GGUF 변환 + Ollama 배포 | 📋 대기 | Phase 4 (ORPO 평가 PASS 시) |
+| **Phase 3 (ORPO 본 학습)** | **✅ 완료** | **9,997 steps, eval_loss 1.625, pref_acc 76.02%** |
+| Phase 3.5 (ORPO 종합 평가) | ✅ 완료 | 7/10 PASS, 3-way 비교 완료 |
+| GGUF 변환 + Ollama 배포 | ✅ 완료 | byte-fallback 수정, Q4_K_M/Q8_0/f16, HF + Ollama 배포 |
 
 ### 중기 (2026년 2분기)
 
