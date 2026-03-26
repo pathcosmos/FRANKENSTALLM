@@ -7,7 +7,7 @@
 ![GPU](https://img.shields.io/badge/GPU-8×_NVIDIA_B200-76b900)
 ![FP8](https://img.shields.io/badge/Precision-MXFP8-orange)
 ![ORPO](https://img.shields.io/badge/ORPO-완료_eval__loss_1.625-success)
-![HuggingFace](https://img.shields.io/badge/🤗_HuggingFace-배포_완료-ff9900)
+[![HuggingFace](https://img.shields.io/badge/🤗_HuggingFace-배포_완료-ff9900)](https://huggingface.co/pathcosmos/frankenstallm)
 
 > **한국어 3B LLM을 8× NVIDIA B200 위에서 처음부터 직접 만든다.**
 > Frankenstein처럼 조각을 이어 붙이고, 철강처럼 단단하게 단련한다.
