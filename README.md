@@ -3,7 +3,7 @@
 > 🌍 [English Version](./README_en.md)
 
 ![Phase 4](https://img.shields.io/badge/Phase_4-배포_완료-brightgreen)
-![Model](https://img.shields.io/badge/Model-3B_Korean_LLM-green)
+[![Model](https://img.shields.io/badge/Model-3B_Korean_LLM-green)](https://huggingface.co/pathcosmos/frankenstallm)
 ![GPU](https://img.shields.io/badge/GPU-8×_NVIDIA_B200-76b900)
 ![FP8](https://img.shields.io/badge/Precision-MXFP8-orange)
 ![ORPO](https://img.shields.io/badge/ORPO-완료_eval__loss_1.625-success)
@@ -1703,7 +1703,7 @@ Phase 0 분석에서 발견했지만 아직 적용하지 않은 최적화들:
 
 ## 관련 프로젝트
 
-### [EVAFRILL-Mo](https://github.com/pathcosmos/EVAFRILL-Mo)
+### [EVAFRILL-Mo](https://github.com/pathcosmos/EVAFRILL-Mo) | [🤗 HuggingFace](https://huggingface.co/pathcosmos/EVAFRILL-Mo-3B)
 
 **하이브리드 Mamba-2 + Transformer 언어 모델** — FRANKENSTALLM의 자매 프로젝트.
 
